@@ -3,5 +3,5 @@ Planes Dietéticos Asistidos por Modelos de Lenguaje Grande bajo Supervisión de
 
 # Integrantes
 - Esdras de la Torre Valdivia
-- ...
+- Adrián Lago Aponte
 - ...
