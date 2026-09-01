@@ -31,3 +31,19 @@ export async function generateDietDraft(patientData: PatientData) {
 
   return response.json();
 }
+
+export async function getPatients() {
+  const response = await fetch('http://localhost:8080/api/v1/patients', {
+    cache: 'no-store' // Evitamos caché para ver siempre los datos frescos
+  });
+  if (!response.ok) throw new Error("Error al obtener pacientes");
+  return response.json();
+}
+
+export async function getPlans() {
+  const response = await fetch('http://localhost:8080/api/v1/plans', {
+    cache: 'no-store'
+  });
+  if (!response.ok) throw new Error("Error al obtener planes");
+  return response.json();
+}
