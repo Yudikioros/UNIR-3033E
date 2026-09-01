@@ -1,10 +1,13 @@
 services:
   vllm:
-    image: vllm/vllm-openai:latest
+    image: vllm/vllm-openai:v0.5.4
     ports:
       - "8000:8000"
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      - VLLM_USE_V1=0
+    shm_size: '8gb'
     deploy:
       resources:
         reservations:
@@ -12,7 +15,20 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    command: --model Qwen/Qwen2.5-7B-Instruct --dtype auto --max-model-len 4096
+    command: >
+      --model Qwen/Qwen2.5-7B-Instruct-AWQ
+      --quantization awq
+      --dtype auto
+      --max-model-len 4096
+      --gpu-memory-utilization 0.90
+      --enforce-eager
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./data/qdrant_storage:/qdrant/storage
 
   backend:
     build:
@@ -21,8 +37,15 @@ services:
       - "8080:8080"
     environment:
       - VLLM_API_URL=http://vllm:8000/v1
+      - QDRANT_URL=http://qdrant:6333
     depends_on:
       - vllm
+      - qdrant
+    volumes:
+      - ./backend/src:/app/src
+      - ./data/pdfs:/app/data/pdfs
+      - ./data/tables:/app/data/tables
+      - ./data/db:/app/data/db
 
   frontend:
     build:
@@ -30,6 +53,6 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8080
+      - NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
     depends_on:
       - backend
