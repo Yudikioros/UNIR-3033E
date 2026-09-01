@@ -45,6 +45,7 @@ services:
       - ./backend/src:/app/src
       - ./data/pdfs:/app/data/pdfs
       - ./data/tables:/app/data/tables
+      - ./data/db:/app/data/db
 
   frontend:
     build:
@@ -52,6 +53,6 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8080
+      - NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
     depends_on:
       - backend
