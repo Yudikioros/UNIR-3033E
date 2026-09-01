@@ -1,18 +1,23 @@
 FROM python:3.14-slim
 
-# Copy uv from its official image
+# 1. Instalar la librería del sistema necesaria para Prisma/Node.js
+RUN apt-get update && apt-get install -y libatomic1 && rm -rf /var/lib/apt/lists/*
+
+# Copiar uv desde su imagen oficial
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-# 1. Copy ALL backend files (including pyproject.toml and the src folder)
+# 2. Copiar los archivos del backend
 COPY . .
 
-# 2. Now sync and install dependencies and the local package
+# 3. Instalar dependencias
 RUN uv sync --no-dev --no-cache
 
-# 3. Expose the port
+# 4. Generar el cliente de Prisma
+RUN uv run prisma generate
+
 EXPOSE 8080
 
-# 4. Start Uvicorn using uv run
-CMD ["uv", "run", "uvicorn", "src.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# 5. Arrancar Uvicorn
+CMD ["sh", "-c", "uv run prisma db push && uv run uvicorn src.app.main:app --host 0.0.0.0 --port 8080"]
