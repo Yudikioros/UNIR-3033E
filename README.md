@@ -22,6 +22,7 @@ Este proyecto consiste en una plataforma para la creación de planes dietéticos
 
 - Tener instalado Docker y Docker Compose.
 - Tener configuradas las variables de entorno necesarias (ver archivos `.env` en cada carpeta).
+- Configurar las variables de entorno para el modelo de lenguaje (LLM) que se desea desplegar (ej. `LLM_MODEL`, `LLM_QUANTIZATION`, `LLM_MAX_LEN`).
 
 ### Ejecución con Docker Compose
 

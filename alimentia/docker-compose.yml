@@ -1,13 +1,10 @@
 services:
-  vllm:
-    image: vllm/vllm-openai:v0.5.4
+  ollama:
+    image: ollama/ollama:latest
     ports:
-      - "8000:8000"
+      - "11434:11434"
     volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
-    environment:
-      - VLLM_USE_V1=0
-    shm_size: '8gb'
+      - ./data/ollama:/root/.ollama
     deploy:
       resources:
         reservations:
@@ -15,13 +12,6 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    command: >
-      --model Qwen/Qwen2.5-7B-Instruct-AWQ
-      --quantization awq
-      --dtype auto
-      --max-model-len 4096
-      --gpu-memory-utilization 0.90
-      --enforce-eager
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -36,10 +26,11 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - VLLM_API_URL=http://vllm:8000/v1
+      - LLM_API_URL=http://ollama:11434/v1
       - QDRANT_URL=http://qdrant:6333
+      - LLM_MODEL=${LLM_MODEL}
     depends_on:
-      - vllm
+      - ollama
       - qdrant
     volumes:
       - ./backend/src:/app/src

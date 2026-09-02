@@ -85,9 +85,35 @@ export default function PatientPlanPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // 1. Validación básica en el frontend
+    if (formData.age <= 0 || formData.weight <= 0 || formData.height <= 0) {
+      setError(
+        "Por favor, ingresa valores válidos (mayores a 0) para edad, peso y talla.",
+      );
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setResult(null);
+
+    // 2. Función segura para limpiar textos vacíos y convertirlos en arrays válidos
+    const cleanArray = (str: string) => {
+      if (!str) return [];
+      return str
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.toLowerCase() !== "ninguna" && s !== "");
+    };
+
+    // 3. Mapeo correcto de los niveles de actividad al inglés (si tu backend lo espera así)
+    const mapActivity = (activity: string) => {
+      const act = activity.toLowerCase();
+      if (act.includes("ligera")) return "light";
+      if (act.includes("intensa")) return "active";
+      return "moderate";
+    };
 
     const payload: PatientData = {
       age: Number(formData.age),
@@ -95,22 +121,13 @@ export default function PatientPlanPage() {
       weight: Number(formData.weight),
       height: Number(formData.height),
       goal: formData.goal,
-      activity_level: "light",
-      pathologies: formData.pathologies
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.toLowerCase() !== "ninguna"),
-      allergies_intolerances: formData.allergies
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.toLowerCase() !== "ninguna"),
-      food_preferences: formData.preferences
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.toLowerCase() !== "sin restricciones"),
+      activity_level: mapActivity(formData.activity_level),
+      pathologies: cleanArray(formData.pathologies),
+      allergies_intolerances: cleanArray(formData.allergies),
+      food_preferences: cleanArray(formData.preferences),
       medications: [],
       cultural_restrictions: [],
-      budget: formData.budget,
+      budget: formData.budget || "$120 - $160 MXN",
       regional_availability: "México",
     };
 
@@ -180,6 +197,11 @@ export default function PatientPlanPage() {
             </h3>
 
             <form onSubmit={handleSubmit} className="space-y-5">
+              {error && (
+                <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm font-medium">
+                  {error}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-5">
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1.5">
