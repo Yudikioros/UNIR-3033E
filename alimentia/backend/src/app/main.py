@@ -8,9 +8,10 @@ from qdrant_client import QdrantClient
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.core import VectorStoreIndex
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from prisma import Prisma  # <-- 1. NUEVA IMPORTACIÓN
+from prisma import Prisma
 
 from app.schemas.patient import PatientIn
+from app.schemas.plan import DietPlanDraft
 from app.services.calculator import get_nutritional_baseline
 from app.services.llm_client import generate_diet_plan_draft
 from app.services.food_db import get_exact_macros
@@ -110,15 +111,23 @@ async def generate_draft(patient: PatientIn):
             patient, nutritional_requirements, exact_foods_context, clinical_guidelines
         )
 
+        # 4. VALIDACIÓN ESTRICTA CON PYDANTIC
         try:
-            diet_plan_json = json.loads(llm_response_string)
-        except json.JSONDecodeError as e:
+            # Pydantic valida que la respuesta cumpla con la estructura exacta de DietPlanDraft
+            validated_plan = DietPlanDraft.model_validate_json(
+                llm_response_string)
+
+            # Convertimos el modelo validado a un diccionario seguro para la respuesta
+            diet_plan_dict = validated_plan.model_dump()
+
+        except Exception as e:
+            # Si el LLM no generó el JSON esperado, lo atrapamos aquí
             return {
-                "message": f"Error parsing JSON from LLM: {str(e)}",
+                "message": f"Fallo en la validación estructural del LLM: {str(e)}",
                 "raw_llm_output": llm_response_string
             }
 
-        # 4. GUARDADO EN BASE DE DATOS CON PRISMA
+        # 5. GUARDADO EN BASE DE DATOS CON PRISMA
         nuevo_paciente = await db.patient.create(
             data={
                 "age": patient.age,
@@ -128,7 +137,8 @@ async def generate_draft(patient: PatientIn):
                 "plans": {
                     "create": [{
                         "tdee_calculated": nutritional_requirements["tdee_kcal"],
-                        "plan_json": json.dumps(diet_plan_json),
+                        # model_dump_json() asegura que guardamos texto 100% válido en la base de datos
+                        "plan_json": validated_plan.model_dump_json(),
                         "status": "BORRADOR"
                     }]
                 }
@@ -141,7 +151,7 @@ async def generate_draft(patient: PatientIn):
             "patient_db_id": nuevo_paciente.id,
             "plan_db_id": nuevo_paciente.plans[0].id,
             "calculated_requirements": nutritional_requirements,
-            "diet_plan": diet_plan_json
+            "diet_plan": diet_plan_dict
         }
 
     except Exception as e:

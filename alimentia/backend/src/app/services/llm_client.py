@@ -3,11 +3,11 @@ from openai import AsyncOpenAI
 from app.schemas.patient import PatientIn
 
 client = AsyncOpenAI(
-    base_url=os.getenv("VLLM_API_URL", "http://localhost:8000/v1"),
+    base_url=os.getenv("LLM_API_URL", "http://ollama:11434/v1"),
     api_key="EMPTY"
 )
 
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct-AWQ")
+MODEL_NAME = os.getenv("LLM_MODEL", "gemma4")
 
 
 async def generate_diet_plan_draft(patient: PatientIn, nutritional_requirements: dict, exact_foods_context: list, clinical_guidelines: str) -> str:
