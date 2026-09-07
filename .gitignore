@@ -32,4 +32,8 @@ build/
 
 # Docker
 .docker/
-data/
+
+# Data
+data/*
+!data/pdfs/
+!data/tables/
