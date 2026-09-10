@@ -1,31 +1,328 @@
 datasource db {
   provider = "sqlite"
-  url      = "file:./data/db/alimentia.db"
+  url = "file:./data/db/alimentia.db"
 }
-
 generator client {
-  provider             = "prisma-client-py"
-  interface            = "asyncio"
+  provider = "prisma-client-py"
+  interface = "asyncio"
   recursive_type_depth = 5
 }
-
 model Patient {
-  id               String     @id @default(uuid())
-  name             String     @default("Paciente Nuevo")
-  age              Int
-  gender           String
-  goal             String
-  pathologies      String
-  createdAt        DateTime   @default(now())
-  plans            DietPlan[] 
+  id String @id @default(uuid())
+  name String @default("Paciente Nuevo")
+  birthDate DateTime?
+  age Int?
+  ageRecordedAt DateTime?
+  sex String @map("gender")
+  email String?
+  phone String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  defaultActivityLevel String?
+  defaultGoal String?
+  defaultMealsPerDay Int?
+  defaultDailyBudget Float?
+  notes String?
+  // Age is an explicitly recorded observation; never stored together with birthDate.
+  demoKey String? @unique
+  consultations NutritionConsultation[]
+  dietaryItems PatientDietaryItem[]
+  conditions PatientCondition[]
+  legacySnapshot LegacyPatientSnapshot?
+  createRequests PatientCreateRequest[]
+}
+model NutritionConsultation {
+  id String @id @default(uuid())
+  patientId String
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  consultationDate DateTime @default(now())
+  status String @default("DRAFT")
+  requiresProfessionalReview Boolean @default(false)
+  createRequests ConsultationCreateRequest[]
+  // Unknown historical observations remain null; new Create DTO requires them.
+  ageAtConsultation Int?
+  sex String?
+  weightKg Float?
+  heightM Float?
+  activityLevel String?
+  goal String?
+  mealsPerDay Int?
+  dailyBudget Float?
+  budgetMin Float?
+  budgetMax Float?
+  notes String?
+  legacyPlanId String? @unique
+  demoKey String? @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  plans DietPlan[]
+  generations AIGeneration[]
+  dietaryItems ConsultationDietaryItem[]
+  calculations ConsultationCalculation[]
+  @@index([patientId])
+  @@index([consultationDate])
+}
+model DietPlan {
+  id String @id @default(uuid())
+  consultationId String
+  consultation NutritionConsultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  version Int @default(1)
+  // SQLite enum equivalent: Python enum and SQL CHECK in migration.
+  status String @default("DRAFT")
+  // Fase 6: el LLM ya generaba summary/recommendations (Fase 4) pero se
+  // descartaban; se persisten para poder mostrarlos en el PDF exportado.
+  // Nulos en planes históricos previos a esta columna.
+  summary String?
+  recommendations String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  approvedAt DateTime?
+  approvedBy String?
+  rejectedAt DateTime?
+  rejectedBy String?
+  rejectionReason String?
+  meals DietPlanMeal[]
+  generationLinks GenerationPlanLink[]
+  nutrientObservations PlanNutrientObservation[]
+  legacySnapshot LegacyPlanSnapshot?
+  validations PlanValidation[]
+  changes DietPlanChangeLog[]
+  @@unique([consultationId, version])
+  @@index([consultationId])
+  @@index([status])
+}
+model DietPlanMeal {
+  id String @id @default(uuid())
+  dietPlanId String
+  dietPlan DietPlan @relation(fields: [dietPlanId], references: [id], onDelete: Restrict)
+  mealType String
+  name String
+  sortOrder Int
+  foods DietPlanFood[]
+  @@unique([dietPlanId, sortOrder])
+}
+model DietPlanFood {
+  id String @id @default(uuid())
+  dietPlanMealId String
+  meal DietPlanMeal @relation(fields: [dietPlanMealId], references: [id], onDelete: Restrict)
+  foodName String
+  // Nullable only to preserve unparseable historical quantities without inventing data.
+  quantity Float?
+  unit String?
+  smaeEquivalent String?
+  calories Float?
+  protein Float?
+  carbohydrates Float?
+  fat Float?
+  notes String?
+  legacyQuantity String?
+  @@index([dietPlanMealId])
+}
+model AIGeneration {
+  id String @id @default(uuid())
+  consultationId String
+  consultation NutritionConsultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+  modelProvider String
+  modelName String
+  modelVersion String?
+  promptVersion String?
+  knowledgeBaseVersion String?
+  executionTimeMs Int?
+  status String
+  errorMessage String?
+  // Fase 6: nulo para generaciones históricas previas a esta columna (no se
+  // infiere ni se rellena retroactivamente lo que no se registró en su momento).
+  foodDatabaseUsed Boolean?
+  knowledgeBaseUsed Boolean?
+  // Progreso por etapas (corrección UX): `createdAt` ya funciona como
+  // startedAt real (la fila se crea al INICIO de la generación, no al
+  // final). `stage` refleja la etapa real del pipeline (ver GenerationStage
+  // en diet_plan_generation.py); nulo para generaciones históricas previas
+  // a esta columna. `status` reutiliza el campo existente, ahora con un
+  // tercer valor posible "IN_PROGRESS" además de "SUCCESS"/"FAILED".
+  stage String?
+  completedAt DateTime?
+  // Retention is opt-in. No automatic request capture in phase 1.
+  retainPayloads Boolean @default(false)
+  requestPayload String?
+  responsePayload String?
+  retrievedSources RetrievedSource[]
+  planLink GenerationPlanLink?
+  @@index([consultationId])
+  @@index([createdAt])
+}
+model KnowledgeSource {
+  id String @id @default(uuid())
+  documentName String
+  institution String?
+  version String?
+  publicationDate DateTime?
+  sourceType String?
+  isActive Boolean @default(true)
+  checksum String?
+  originalFilename String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  retrievedSources RetrievedSource[]
+  // Administración de documentos (corrección de UX): id del manifiesto
+  // (slug) enlazado directamente -antes solo se podía inferir buscando por
+  // originalFilename-, nombre físico real en disco (puede diferir del
+  // nombre original mostrado al usuario, para evitar colisiones), y estado
+  // real de indexación en Qdrant. Nulos/"INDEXED" para filas legadas
+  // sincronizadas antes de esta columna (se rellenan solas la próxima vez
+  // que corre sync_knowledge_sources, sin migración de datos aparte).
+  manifestSourceId String?
+  storedFilename String?
+  indexStatus String @default("INDEXED")
+  indexError String?
+}
+model RetrievedSource {
+  id String @id @default(uuid())
+  generationId String
+  generation AIGeneration @relation(fields: [generationId], references: [id], onDelete: Restrict)
+  knowledgeSourceId String
+  knowledgeSource KnowledgeSource @relation(fields: [knowledgeSourceId], references: [id], onDelete: Restrict)
+  section String?
+  content String
+  retrievalScore Float?
+  createdAt DateTime @default(now())
+  @@index([generationId])
+  @@index([knowledgeSourceId])
+}
+// Trazabilidad del asistente conversacional (módulo de asistente IA
+// contextual). Nunca persiste la respuesta completa del LLM ni PII más allá
+// de los IDs de navegación que el propio frontend ya expone en la URL.
+model AssistantInteraction {
+  id String @id @default(uuid())
+  createdAt DateTime @default(now())
+  promptVersion String
+  model String
+  userQuestion String
+  navigationContext String?
+  toolsUsed String?
+  sourceIds String?
+  executionTimeMs Int?
+  status String
+  errorMessage String?
+  @@index([createdAt])
+}
+model PlanValidation {
+  id String @id @default(uuid())
+  dietPlanId String
+  dietPlan DietPlan @relation(fields: [dietPlanId], references: [id], onDelete: Restrict)
+  severity String
+  code String
+  message String
+  source String
+  isBlocking Boolean @default(false)
+  createdAt DateTime @default(now())
+  @@index([dietPlanId])
+}
+model DietPlanChangeLog {
+  id String @id @default(uuid())
+  dietPlanId String
+  dietPlan DietPlan @relation(fields: [dietPlanId], references: [id], onDelete: Restrict)
+  changedAt DateTime @default(now())
+  changedBy String
+  changeType String
+  field String?
+  previousValue String?
+  newValue String?
+  notes String?
+  @@index([dietPlanId])
+  @@index([changedAt])
 }
 
-model DietPlan {
-  id               String   @id @default(uuid())
-  patientId        String
-  patient          Patient  @relation(fields: [patientId], references: [id])
-  tdee_calculated  Float
-  plan_json        String
-  status           String   @default("BORRADOR")
-  createdAt        DateTime @default(now())
+model PatientDietaryItem {
+  id String @id @default(uuid())
+  patientId String
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  kind String
+  content String
+  @@unique([patientId, kind, content])
+}
+model ConsultationDietaryItem {
+  id String @id @default(uuid())
+  consultationId String
+  consultation NutritionConsultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  kind String
+  content String
+  @@unique([consultationId, kind, content])
+}
+model PatientCondition {
+  id String @id @default(uuid())
+  patientId String
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  description String
+  @@unique([patientId, description])
+}
+model ConsultationCalculation {
+  id String @id @default(uuid())
+  consultationId String
+  consultation NutritionConsultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  calculationMethod String?
+  calculationRuleVersion String?
+  calculationDetails String?
+  recordedAt DateTime @default(now())
+  metrics CalculationMetric[]
+  @@index([consultationId, recordedAt])
+}
+model CalculationMetric {
+  calculationId String
+  calculation ConsultationCalculation @relation(fields: [calculationId], references: [id], onDelete: Restrict)
+  metricCode String
+  value Float
+  @@id([calculationId, metricCode])
+}
+model PlanNutrientObservation {
+  dietPlanId String
+  dietPlan DietPlan @relation(fields: [dietPlanId], references: [id], onDelete: Restrict)
+  metricCode String
+  value Float
+  @@id([dietPlanId, metricCode])
+}
+model GenerationPlanLink {
+  generationId String @id
+  generation AIGeneration @relation(fields: [generationId], references: [id], onDelete: Restrict)
+  dietPlanId String
+  dietPlan DietPlan @relation(fields: [dietPlanId], references: [id], onDelete: Restrict)
+  isOrigin Boolean @default(false)
+  @@index([dietPlanId])
+}
+// Immutable source records for provenance, not editable copies of operational data.
+model LegacyPatientSnapshot {
+  patientId String @id
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  originalGoal String
+  originalPathologies String
+  originalPreferences String?
+  originalFoodsToAvoid String?
+  originalAllergies String?
+  importedAt DateTime @default(now())
+}
+model LegacyPlanSnapshot {
+  dietPlanId String @id
+  dietPlan DietPlan @relation(fields: [dietPlanId], references: [id], onDelete: Restrict)
+  originalPatientId String
+  originalTdee Float?
+  originalPlanJson String?
+  originalStatus String?
+  importedAt DateTime @default(now())
+}
+
+// Request receipts prevent retries from creating duplicate domain records.
+model PatientCreateRequest {
+  key String @id
+  requestHash String
+  patientId String
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+  @@index([patientId])
+}
+model ConsultationCreateRequest {
+  key String @id
+  requestHash String
+  consultationId String
+  consultation NutritionConsultation @relation(fields: [consultationId], references: [id], onDelete: Restrict)
+  @@index([consultationId])
 }

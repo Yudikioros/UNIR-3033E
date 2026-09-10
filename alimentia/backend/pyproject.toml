@@ -5,7 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "torch>=2.11.0",
     "fastapi>=0.141.1",
+    "fpdf2>=2.8.5",
     "httpx>=0.28.1",
     "llama-index-core>=0.14.24",
     "llama-index-embeddings-huggingface>=0.7.0",
@@ -17,6 +19,7 @@ dependencies = [
     "pydantic>=2.13.5",
     "pypdf>=6.16.2",
     "python-dotenv>=1.2.3",
+    "python-multipart>=0.0.20",
     "qdrant-client>=1.19.0",
     "sentence-transformers>=6.0.0",
     "uvicorn[standard]>=0.52.4",
@@ -25,3 +28,11 @@ dependencies = [
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

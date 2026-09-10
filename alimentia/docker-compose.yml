@@ -28,7 +28,15 @@ services:
     environment:
       - LLM_API_URL=http://ollama:11434/v1
       - QDRANT_URL=http://qdrant:6333
-      - LLM_MODEL=${LLM_MODEL}
+      - LLM_MODEL=${LLM_MODEL:-llama3.2:3b}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      - ALIMENTIA_KNOWLEDGE_PATH=${ALIMENTIA_KNOWLEDGE_PATH:-/app/data/pdfs}
+      - ALIMENTIA_FOOD_DB_PATH=${ALIMENTIA_FOOD_DB_PATH:-/app/data/tables/BAM.xlsx}
+      - ALIMENTIA_KNOWLEDGE_MANIFEST_PATH=${ALIMENTIA_KNOWLEDGE_MANIFEST_PATH:-/app/data/knowledge_base/manifest.json}
+      - ALIMENTIA_RAG_TOP_K=${ALIMENTIA_RAG_TOP_K:-3}
+      - ALIMENTIA_LLM_TEMPERATURE=${ALIMENTIA_LLM_TEMPERATURE:-0.2}
+      - ALIMENTIA_LLM_TIMEOUT_SECONDS=${ALIMENTIA_LLM_TIMEOUT_SECONDS:-240}
+      - ALIMENTIA_DEFAULT_ACTOR=${ALIMENTIA_DEFAULT_ACTOR:-profesional-demo}
     depends_on:
       - ollama
       - qdrant
@@ -37,6 +45,7 @@ services:
       - ./data/pdfs:/app/data/pdfs
       - ./data/tables:/app/data/tables
       - ./data/db:/app/data/db
+      - ./data/knowledge_base:/app/data/knowledge_base
 
   frontend:
     build:

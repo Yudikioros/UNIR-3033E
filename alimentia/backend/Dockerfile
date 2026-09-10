@@ -11,6 +11,9 @@ WORKDIR /app
 # 2. Copiar los archivos del backend
 COPY . .
 
+# Los embeddings se ejecutan en CPU; Ollama administra su propia GPU opcional.
+ENV UV_TORCH_BACKEND=cpu
+
 # 3. Instalar dependencias
 RUN uv sync --no-dev --no-cache
 
@@ -20,4 +23,4 @@ RUN uv run prisma generate
 EXPOSE 8080
 
 # 5. Arrancar Uvicorn
-CMD ["sh", "-c", "uv run prisma db push && uv run uvicorn src.app.main:app --host 0.0.0.0 --port 8080"]
+CMD ["sh", "-c", "uv run --no-sync python migrate.py && uv run --no-sync uvicorn src.app.main:app --host 0.0.0.0 --port 8080"]

@@ -9,13 +9,21 @@ from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.core import VectorStoreIndex
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from prisma import Prisma
+from app.repositories.legacy import list_plans, save_legacy_draft
+from app.repositories.knowledge import sync_knowledge_sources
+from app.routes.capture import router as capture_router
+from app.routes.resources import router as resources_router
+from app.routes.knowledge import router as knowledge_router
+from app.routes.plans import router as plans_router
+from app.routes.assistant import router as assistant_router
+from app.routes.dashboard import router as dashboard_router
 
 from app.schemas.patient import PatientIn
 from app.schemas.plan import DietPlanDraft
 from app.services.calculator import get_nutritional_baseline
 from app.services.llm_client import generate_diet_plan_draft
 from app.services.food_db import get_exact_macros
-from app.services.rag_engine import build_knowledge_base
+from app.services.rag_engine import build_knowledge_base, KNOWLEDGE_COLLECTION, knowledge_path
 
 # Instanciamos el cliente de Prisma
 db = Prisma()
@@ -29,6 +37,11 @@ async def lifespan(app: FastAPI):
     print("🗄️ Conectando a la base de datos con Prisma...")
     await db.connect()
 
+    try:
+        await sync_knowledge_sources(db, knowledge_path())
+    except Exception as exc:
+        print(f"Aviso: no fue posible sincronizar fuentes de conocimiento. {exc}")
+
     print("⏳ Iniciando motor RAG en segundo plano...")
     threading.Thread(target=build_knowledge_base).start()
     yield
@@ -37,9 +50,16 @@ async def lifespan(app: FastAPI):
     await db.disconnect()
 
 app = FastAPI(title="AlimentIA Backend", lifespan=lifespan)
+app.state.db = db
+app.include_router(capture_router)
+app.include_router(resources_router)
+app.include_router(knowledge_router)
+app.include_router(plans_router)
+app.include_router(assistant_router)
+app.include_router(dashboard_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://172.18.0.5:3000"],
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,7 +77,7 @@ def get_clinical_retriever():
     try:
         client_qdrant = QdrantClient(url=QDRANT_URL)
         vector_store = QdrantVectorStore(
-            client=client_qdrant, collection_name="medical_guidelines")
+            client=client_qdrant, collection_name=KNOWLEDGE_COLLECTION)
         index = VectorStoreIndex.from_vector_store(
             vector_store=vector_store, embed_model=embed_model)
         return index.as_retriever(similarity_top_k=2)
@@ -69,15 +89,6 @@ def get_clinical_retriever():
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "AlimentIA Backend"}
-
-
-@app.post("/api/v1/ingest-pdfs")
-def ingest_pdfs():
-    try:
-        build_knowledge_base()
-        return {"message": "✅ PDFs vectorizados y guardados en Qdrant exitosamente."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/generate-draft")
@@ -128,23 +139,7 @@ async def generate_draft(patient: PatientIn):
             }
 
         # 5. GUARDADO EN BASE DE DATOS CON PRISMA
-        nuevo_paciente = await db.patient.create(
-            data={
-                "age": patient.age,
-                "gender": patient.gender,
-                "goal": patient.goal,
-                "pathologies": ", ".join(patient.pathologies),
-                "plans": {
-                    "create": [{
-                        "tdee_calculated": nutritional_requirements["tdee_kcal"],
-                        # model_dump_json() asegura que guardamos texto 100% válido en la base de datos
-                        "plan_json": validated_plan.model_dump_json(),
-                        "status": "BORRADOR"
-                    }]
-                }
-            },
-            include={"plans": True}
-        )
+        nuevo_paciente = await save_legacy_draft(db, patient, nutritional_requirements, validated_plan)
 
         return {
             "message": "Draft generated successfully.",
@@ -158,27 +153,10 @@ async def generate_draft(patient: PatientIn):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/patients")
-async def get_patients():
-    try:
-        # Obtenemos todos los pacientes e incluimos sus planes para saber el estado
-        patients = await db.patient.find_many(
-            include={"plans": True},
-            order={"createdAt": "desc"}
-        )
-        return patients
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/api/v1/plans")
 async def get_plans():
     try:
         # Obtenemos todos los planes e incluimos los datos del paciente asociado
-        plans = await db.dietplan.find_many(
-            include={"patient": True},
-            order={"createdAt": "desc"}
-        )
-        return plans
+        return await list_plans(db)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

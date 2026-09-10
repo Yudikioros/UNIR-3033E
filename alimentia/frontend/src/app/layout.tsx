@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Link from "next/link";
+import { FloatingAssistant } from "../components/assistant/floating-assistant";
 
 export const metadata: Metadata = {
   title: "AlimentIA Dashboard",
@@ -182,6 +183,7 @@ export default function RootLayout({
         {/* ================= CONTENEDOR DINÁMICO ================= */}
         <main className="flex-1 flex flex-col h-full overflow-hidden relative">
           {children}
+          <FloatingAssistant />
         </main>
       </body>
     </html>
