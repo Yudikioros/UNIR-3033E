@@ -58,18 +58,20 @@ def _actor(value) -> str:
 
 
 def _validation_read(row) -> PlanValidationRead:
-    data = {k: v for k, v in row.model_dump().items() if k in PlanValidationRead.model_fields}
+    data = {k: v for k, v in row.model_dump().items(
+    ) if k in PlanValidationRead.model_fields}
     return PlanValidationRead.model_validate(data)
 
 
 async def _sources_for_plan(db, plan) -> list:
-    origin_link = next((link for link in plan.generationLinks or [] if link.isOrigin), None)
+    origin_link = next(
+        (link for link in plan.generationLinks or [] if link.isOrigin), None)
     if origin_link is None:
         return []
     rows = await db.retrievedsource.find_many(where={"generationId": origin_link.generationId}, include={"knowledgeSource": True})
     return [RetrievedSourceRead(id=row.id, knowledgeSourceId=row.knowledgeSourceId,
-        documentName=row.knowledgeSource.documentName, institution=row.knowledgeSource.institution,
-        section=row.section, retrievalScore=row.retrievalScore) for row in rows]
+                                documentName=row.knowledgeSource.documentName, institution=row.knowledgeSource.institution,
+                                section=row.section, retrievalScore=row.retrievalScore) for row in rows]
 
 
 async def _plan_detail(db, plan, consultation_targets=None) -> DietPlanDetail:
@@ -77,7 +79,8 @@ async def _plan_detail(db, plan, consultation_targets=None) -> DietPlanDetail:
         consultation = await get_consultation(db, plan.consultationId)
         consultation_targets = consultation_read(consultation)
 
-    origin_link = next((link for link in plan.generationLinks or [] if link.isOrigin), None)
+    origin_link = next(
+        (link for link in plan.generationLinks or [] if link.isOrigin), None)
     generation = origin_link.generation if origin_link else None
 
     base = plan_read(plan)
@@ -113,10 +116,11 @@ async def get_plan_detail(db, plan_id: str) -> DietPlanDetail:
 
 
 async def list_consultation_plans(db, consultation_id: str) -> list:
-    consultation = await get_consultation(db, consultation_id)  # 404 si la consulta no existe
+    # 404 si la consulta no existe
+    consultation = await get_consultation(db, consultation_id)
     targets = consultation_read(consultation)
     rows = await db.dietplan.find_many(where={"consultationId": consultation_id},
-        include=PLAN_INCLUDE, order={"version": "asc"})
+                                       include=PLAN_INCLUDE, order={"version": "asc"})
     return [await _plan_detail(db, row, consultation_targets=targets) for row in rows]
 
 
@@ -139,22 +143,23 @@ def _stringify(value):
 
 def _diff_foods(meal_index: int, previous: list, new: list) -> list:
     entries = []
-    fields = ("foodName", "quantity", "unit", "calories", "protein", "carbohydrates", "fat", "smaeEquivalent", "notes")
+    fields = ("foodName", "quantity", "unit", "calories", "protein",
+              "carbohydrates", "fat", "smaeEquivalent", "notes")
     for i in range(max(len(previous), len(new))):
         old_food = previous[i] if i < len(previous) else None
         new_food = new[i] if i < len(new) else None
         if old_food is None:
             entries.append({"field": f"meals[{meal_index}].foods[{i}]", "previousValue": None,
-                             "newValue": new_food["foodName"]})
+                            "newValue": new_food["foodName"]})
             continue
         if new_food is None:
             entries.append({"field": f"meals[{meal_index}].foods[{i}]", "previousValue": old_food["foodName"],
-                             "newValue": None})
+                            "newValue": None})
             continue
         for field in fields:
             if old_food.get(field) != new_food.get(field):
                 entries.append({"field": f"meals[{meal_index}].foods[{i}].{field}",
-                    "previousValue": _stringify(old_food.get(field)), "newValue": _stringify(new_food.get(field))})
+                                "previousValue": _stringify(old_food.get(field)), "newValue": _stringify(new_food.get(field))})
     return entries
 
 
@@ -166,15 +171,19 @@ def _diff_meals(previous: list, new: list) -> list:
         old_meal = previous[i] if i < len(previous) else None
         new_meal = new[i] if i < len(new) else None
         if old_meal is None:
-            entries.append({"field": f"meals[{i}]", "previousValue": None, "newValue": new_meal["name"]})
+            entries.append(
+                {"field": f"meals[{i}]", "previousValue": None, "newValue": new_meal["name"]})
             continue
         if new_meal is None:
-            entries.append({"field": f"meals[{i}]", "previousValue": old_meal["name"], "newValue": None})
+            entries.append(
+                {"field": f"meals[{i}]", "previousValue": old_meal["name"], "newValue": None})
             continue
         if old_meal["name"] != new_meal["name"]:
-            entries.append({"field": f"meals[{i}].name", "previousValue": old_meal["name"], "newValue": new_meal["name"]})
+            entries.append(
+                {"field": f"meals[{i}].name", "previousValue": old_meal["name"], "newValue": new_meal["name"]})
         if old_meal["mealType"] != new_meal["mealType"]:
-            entries.append({"field": f"meals[{i}].mealType", "previousValue": old_meal["mealType"], "newValue": new_meal["mealType"]})
+            entries.append(
+                {"field": f"meals[{i}].mealType", "previousValue": old_meal["mealType"], "newValue": new_meal["mealType"]})
         entries.extend(_diff_foods(i, old_meal["foods"], new_meal["foods"]))
     return entries
 
@@ -184,7 +193,7 @@ async def _revalidate(tx, plan_id: str, meals: list, *, meals_per_day, target_ca
     los alimentos persistidos, siempre en base al objetivo real de la consulta."""
     await tx.planvalidation.delete_many(where={"dietPlanId": plan_id})
     validations = plan_validation.validate_meals(meals, meals_per_day=meals_per_day,
-        target_calories=target_calories, restricted_terms=restricted_terms)
+                                                 target_calories=target_calories, restricted_terms=restricted_terms)
     for validation in validations:
         await tx.planvalidation.create(data={"dietPlanId": plan_id, **validation})
 
@@ -197,23 +206,27 @@ async def _revalidate(tx, plan_id: str, meals: list, *, meals_per_day, target_ca
 async def edit_plan(db, plan_id: str, dto) -> DietPlanDetail:
     async with db.tx() as tx:
         plan = await tx.dietplan.find_unique(where={"id": plan_id},
-            include={"meals": {"include": {"foods": True}}})
+                                             include={"meals": {"include": {"foods": True}}})
         if plan is None:
             raise CaptureError(404, "No se encontró el plan.")
         if plan.status not in EDITABLE_STATUSES:
-            raise CaptureError(409, "Este plan ya no admite edición directa en su estado actual.")
+            raise CaptureError(
+                409, "Este plan ya no admite edición directa en su estado actual.")
         if dto.expectedUpdatedAt is not None and plan.updatedAt != dto.expectedUpdatedAt:
-            raise CaptureError(409, "El plan cambió en otra sesión. Recarga antes de guardar.")
+            raise CaptureError(
+                409, "El plan cambió en otra sesión. Recarga antes de guardar.")
 
         consultation = await get_consultation(tx, plan.consultationId)
         targets = consultation_read(consultation)
-        restricted_terms = dietary_values(targets.foodsToAvoid) + dietary_values(targets.allergiesOrIntolerances)
+        restricted_terms = dietary_values(
+            targets.foodsToAvoid) + dietary_values(targets.allergiesOrIntolerances)
 
         actor = _actor(dto.actor)
-        previous_meals = [_meal_snapshot(m) for m in sorted(plan.meals or [], key=lambda m: m.sortOrder)]
+        previous_meals = [_meal_snapshot(m) for m in sorted(
+            plan.meals or [], key=lambda m: m.sortOrder)]
         new_meals = [{"mealType": meal.mealType, "name": meal.name, "sortOrder": index,
-            "foods": [food.model_dump() for food in meal.foods]}
-            for index, meal in enumerate(dto.meals)]
+                      "foods": [food.model_dump() for food in meal.foods]}
+                     for index, meal in enumerate(dto.meals)]
 
         # Un mismo guardado puede generar varias entradas de auditoría (una por campo
         # cambiado, para el detalle del historial); todas comparten `changedAt` para que
@@ -222,7 +235,7 @@ async def edit_plan(db, plan_id: str, dto) -> DietPlanDetail:
         edited_at = now()
         for entry in _diff_meals(previous_meals, new_meals):
             await tx.dietplanchangelog.create(data={"dietPlanId": plan_id, "changedBy": actor,
-                "changeType": "MANUAL_EDIT", "changedAt": edited_at, **entry})
+                                                    "changeType": "MANUAL_EDIT", "changedAt": edited_at, **entry})
 
         meal_ids = [m.id for m in plan.meals or []]
         if meal_ids:
@@ -230,12 +243,12 @@ async def edit_plan(db, plan_id: str, dto) -> DietPlanDetail:
             await tx.dietplanmeal.delete_many(where={"id": {"in": meal_ids}})
         for meal in new_meals:
             await tx.dietplanmeal.create(data={"dietPlanId": plan_id, "mealType": meal["mealType"],
-                "name": meal["name"], "sortOrder": meal["sortOrder"], "foods": {"create": meal["foods"]}})
+                                               "name": meal["name"], "sortOrder": meal["sortOrder"], "foods": {"create": meal["foods"]}})
 
         next_status = "UNDER_REVIEW" if plan.status == "DRAFT" else plan.status
         await tx.dietplan.update(where={"id": plan_id}, data={"status": next_status, "updatedAt": now()})
         await _revalidate(tx, plan_id, new_meals, meals_per_day=consultation.mealsPerDay,
-            target_calories=targets.targetCalories, restricted_terms=restricted_terms)
+                          target_calories=targets.targetCalories, restricted_terms=restricted_terms)
 
         full_plan = await tx.dietplan.find_unique(where={"id": plan_id}, include=PLAN_INCLUDE)
         return await _plan_detail(tx, full_plan, consultation_targets=targets)
@@ -248,14 +261,18 @@ async def approve_plan(db, plan_id: str, dto) -> DietPlanDetail:
     if plan.status == "APPROVED":
         raise CaptureError(409, "Este plan ya fue aprobado.")
     if plan.status not in APPROVABLE_STATUSES:
-        raise CaptureError(409, "Este plan no admite aprobación en su estado actual.")
+        raise CaptureError(
+            409, "Este plan no admite aprobación en su estado actual.")
     if not plan.meals:
-        raise CaptureError(409, "El plan no contiene comidas; no puede aprobarse.")
+        raise CaptureError(
+            409, "El plan no contiene comidas; no puede aprobarse.")
 
     consultation = await get_consultation(db, plan.consultationId)
     targets = consultation_read(consultation)
-    restricted_terms = dietary_values(targets.foodsToAvoid) + dietary_values(targets.allergiesOrIntolerances)
-    meals = [_meal_snapshot(m) for m in sorted(plan.meals or [], key=lambda m: m.sortOrder)]
+    restricted_terms = dietary_values(
+        targets.foodsToAvoid) + dietary_values(targets.allergiesOrIntolerances)
+    meals = [_meal_snapshot(m) for m in sorted(
+        plan.meals or [], key=lambda m: m.sortOrder)]
 
     # Sección 12: "el plan fue validado después de la última modificación" se garantiza
     # revalidando siempre, en su propia transacción, que SIEMPRE se confirma — a diferencia
@@ -263,12 +280,12 @@ async def approve_plan(db, plan_id: str, dto) -> DietPlanDetail:
     # sola transacción, un 409 más abajo revertiría también esta revalidación recién hecha.
     async with db.tx() as tx:
         validations = await _revalidate(tx, plan_id, meals, meals_per_day=consultation.mealsPerDay,
-            target_calories=targets.targetCalories, restricted_terms=restricted_terms)
+                                        target_calories=targets.targetCalories, restricted_terms=restricted_terms)
 
     blocking = [v for v in validations if v["isBlocking"]]
     if blocking:
         raise CaptureError(409, "El plan contiene validaciones que deben resolverse antes de aprobarlo.",
-            extra={"blockingValidations": blocking})
+                           extra={"blockingValidations": blocking})
 
     actor = _actor(dto.actor)
     async with db.tx() as tx:
@@ -277,7 +294,7 @@ async def approve_plan(db, plan_id: str, dto) -> DietPlanDetail:
             "rejectedAt": None, "rejectedBy": None, "rejectionReason": None, "updatedAt": now(),
         })
         await tx.dietplanchangelog.create(data={"dietPlanId": plan_id, "changedBy": actor,
-            "changeType": "APPROVAL", "field": "status", "previousValue": plan.status, "newValue": "APPROVED"})
+                                                "changeType": "APPROVAL", "field": "status", "previousValue": plan.status, "newValue": "APPROVED"})
 
         full_plan = await tx.dietplan.find_unique(where={"id": plan_id}, include=PLAN_INCLUDE)
         return await _plan_detail(tx, full_plan, consultation_targets=targets)
@@ -291,7 +308,8 @@ async def reject_plan(db, plan_id: str, dto) -> DietPlanDetail:
         if plan.status == "APPROVED":
             raise CaptureError(409, "Un plan aprobado no puede rechazarse.")
         if plan.status not in REJECTABLE_STATUSES:
-            raise CaptureError(409, "Este plan no admite rechazo en su estado actual.")
+            raise CaptureError(
+                409, "Este plan no admite rechazo en su estado actual.")
 
         actor = _actor(dto.actor)
         await tx.dietplan.update(where={"id": plan_id}, data={
@@ -299,19 +317,20 @@ async def reject_plan(db, plan_id: str, dto) -> DietPlanDetail:
             "rejectionReason": dto.reason, "updatedAt": now(),
         })
         await tx.dietplanchangelog.create(data={"dietPlanId": plan_id, "changedBy": actor,
-            "changeType": "REJECTION", "field": "status", "previousValue": plan.status,
-            "newValue": "REJECTED", "notes": dto.reason})
+                                                "changeType": "REJECTION", "field": "status", "previousValue": plan.status,
+                                                "newValue": "REJECTED", "notes": dto.reason})
 
         full_plan = await tx.dietplan.find_unique(where={"id": plan_id}, include=PLAN_INCLUDE)
         return await _plan_detail(tx, full_plan)
 
 
 async def _check_regeneratable(db, plan_id: str):
-    plan = await db.dietplan.find_unique(where={"id": plan_id})
+    plan = await db.dietplan.find_unique(where={"id": plan_id}, include=PLAN_INCLUDE)
     if plan is None:
         raise CaptureError(404, "No se encontró el plan.")
     if plan.status not in REGENERATABLE_STATUSES:
-        raise CaptureError(409, "No es posible regenerar a partir de un plan aprobado.")
+        raise CaptureError(
+            409, "No es posible regenerar a partir de un plan aprobado.")
     return plan
 
 
@@ -322,12 +341,12 @@ async def regenerate_plan(db, plan_id: str, dto, *, llm_client=None):
     plan = await _check_regeneratable(db, plan_id)
     actor = _actor(dto.actor)
     result = await diet_plan_generation.regenerate_draft(db, plan.consultationId,
-        instructions=dto.instructions, llm_client=llm_client)
+                                                         instructions=dto.instructions, llm_client=llm_client, previous_plan=plan_read(plan))
 
     await db.dietplanchangelog.create(data={"dietPlanId": plan_id, "changedBy": actor,
-        "changeType": "REGENERATION_REQUESTED", "field": "version",
-        "previousValue": str(plan.version), "newValue": str(result.version),
-        "notes": (dto.instructions or None)})
+                                            "changeType": "REGENERATION_REQUESTED", "field": "version",
+                                            "previousValue": str(plan.version), "newValue": str(result.version),
+                                            "notes": (dto.instructions or None)})
     return result
 
 
@@ -345,14 +364,14 @@ async def start_regeneration_job(db, plan_id: str, dto, *, llm_client=None) -> s
     async def _background():
         try:
             result = await diet_plan_generation.run_generation_job(db, plan.consultationId,
-                instructions=dto.instructions, llm_client=client, generation_id=generation_id,
-                consultation=consultation)
+                                                                   instructions=dto.instructions, llm_client=client, generation_id=generation_id,
+                                                                   consultation=consultation, previous_plan=plan_read(plan))
         except Exception:
             return  # ya quedó registrado como FAILED por run_generation_job
         await db.dietplanchangelog.create(data={"dietPlanId": plan_id, "changedBy": actor,
-            "changeType": "REGENERATION_REQUESTED", "field": "version",
-            "previousValue": str(plan.version), "newValue": str(result.version),
-            "notes": (dto.instructions or None)})
+                                                "changeType": "REGENERATION_REQUESTED", "field": "version",
+                                                "previousValue": str(plan.version), "newValue": str(result.version),
+                                                "notes": (dto.instructions or None)})
 
     diet_plan_generation.spawn_background(_background())
     return generation_id
