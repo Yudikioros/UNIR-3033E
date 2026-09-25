@@ -1,0 +1,75 @@
+{
+  "version": "2.0",
+  "sources": [
+    {
+      "id": "ss-guia-alimentos-2011",
+      "name": "Guía de Alimentos para la Población Mexicana",
+      "institution": "Secretaría de Salud",
+      "publicationYear": 2011,
+      "type": "GUIDELINE",
+      "scope": ["adult_general"],
+      "file": "ss-guia-alimentos-2011.pdf",
+      "active": true
+    },
+    {
+      "id": "anm-guias-sobrepeso-obesidad-2014",
+      "name": "Guías alimentarias y de actividad física en contexto de sobrepeso y obesidad en la población mexicana",
+      "institution": "Academia Nacional de Medicina de México",
+      "publicationYear": 2014,
+      "type": "GUIDELINE",
+      "scope": ["adult_general"],
+      "file": "anm-guias-sobrepeso-obesidad-2014.pdf",
+      "active": true
+    },
+    {
+      "id": "nom-043-ssa2-2012",
+      "name": "NOM-043-SSA2-2012",
+      "institution": "Secretaría de Salud",
+      "publicationYear": 2012,
+      "type": "REGULATION",
+      "scope": ["adult_general"],
+      "file": "nom-043-ssa2-2012.pdf",
+      "active": true
+    },
+    {
+      "id": "smae-5a-edicion",
+      "name": "SMAE 5a Edición",
+      "institution": null,
+      "publicationYear": null,
+      "type": "REFERENCE_TABLE",
+      "scope": ["adult_general"],
+      "file": "smae-5a-edicion.pdf",
+      "active": true
+    },
+    {
+      "id": "smae-4a-edicion",
+      "name": "SMAE 4a Edición",
+      "institution": null,
+      "publicationYear": null,
+      "type": "REFERENCE_TABLE",
+      "scope": ["adult_general"],
+      "file": "smae-4a-edicion.pdf",
+      "active": false
+    },
+    {
+      "id": "composicion-grasas-2007",
+      "name": "Composición de grasas",
+      "institution": null,
+      "publicationYear": 2007,
+      "type": "REFERENCE_TABLE",
+      "scope": ["adult_general"],
+      "file": "composicion-grasas-2007.pdf",
+      "active": true
+    },
+    {
+      "id": "guias-saludables-sostenibles-2023",
+      "name": "Guías saludables y sostenibles",
+      "institution": null,
+      "publicationYear": 2023,
+      "type": "GUIDELINE",
+      "scope": ["adult_general"],
+      "file": "guias-saludables-sostenibles-2023.pdf",
+      "active": true
+    }
+  ]
+}
