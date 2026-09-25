@@ -39,7 +39,7 @@ from app.services.food_db import _strip_accents, get_food_database_service
 from app.services.knowledge_manifest import knowledge_base_version
 from app.services.llm_client import LLMClient, LLMGenerationError
 
-DIET_PLAN_PROMPT_VERSION = "1.0"
+DIET_PLAN_PROMPT_VERSION = "1.1"
 
 
 class GenerationStage(StrEnum):
@@ -78,24 +78,36 @@ GRAM_UNITS = {"g", "gr", "gramo", "gramos"}
 RAG_TOP_K = int(os.getenv("ALIMENTIA_RAG_TOP_K", "3"))
 VALIDATION_SOURCE = "diet_plan_generation"
 MAX_INSTRUCTIONS_LENGTH = 500
+try:
+    NUTRITION_RETRY_COUNT = min(
+        max(int(os.getenv("ALIMENTIA_NUTRITION_RETRY_COUNT", "2")), 0), 3)
+except ValueError:
+    NUTRITION_RETRY_COUNT = 2
 CALCULATION_REQUIRED_MESSAGE = "Los requerimientos nutricionales deben calcularse antes de generar el borrador."
 PROVIDER_FAILURE_MESSAGE = "No fue posible generar el borrador. Intenta nuevamente."
 
-DIET_PLAN_SYSTEM_PROMPT = """Eres un asistente que prepara un BORRADOR de plan alimentario para revisión de un profesional de nutrición. No eres responsable de la decisión final: el nutriólogo revisa, modifica, aprueba o rechaza.
+DIET_PLAN_SYSTEM_PROMPT = """Eres un asistente que prepara un BORRADOR de plan alimentario para revisión de un profesional de nutrición. El profesional toma la decisión final.
 
-DEBES:
-- Respetar exactamente los requerimientos energéticos y de macronutrientes ya calculados que se te proporcionan.
-- Respetar el número de comidas indicado.
-- Respetar las preferencias alimentarias indicadas.
-- Evitar por completo los alimentos marcados como restringidos o como alergias/intolerancias.
-- Producir EXCLUSIVAMENTE la estructura JSON solicitada, sin texto adicional, sin bloques de markdown.
+REGLAS DURAS, EN ESTE ORDEN:
+1. Seguridad: nunca incluyas alimentos de la lista de restricciones o alergias/intolerancias, ni variantes obvias de esos alimentos.
+2. Cantidad: devuelve exactamente el número de comidas solicitado; cada comida debe tener al menos un alimento.
+3. Objetivos: ajusta cantidades y selección para que la suma de todos los alimentos quede dentro de ±5% de las calorías objetivo y ±10% de proteína, carbohidratos y grasa. Los objetivos son la fuente de verdad; no los recalcules ni los cambies. No debes Recalcular los requerimientos.
+4. Coherencia: cada alimento debe tener nutrientes compatibles con su cantidad y unidad. No escribas calorías o macros arbitrarios para hacer cuadrar el total.
+5. Preferencias: respeta preferencias, presupuesto y notas siempre que no contradigan una regla dura.
+6. Procedencia: usa los datos alimentarios verificados proporcionados; si no están disponibles, no afirmes que usaste BAM o SMAE ni inventes equivalencias.
 
-NO DEBES:
-- Recalcular ni modificar la energía objetivo ni los macronutrientes: son datos ya calculados y validados por un motor determinístico.
-- Diagnosticar ni prescribir tratamiento para ninguna patología.
-- Inventar fuentes bibliográficas o científicas que no se te hayan proporcionado.
-- Inventar equivalencias del Sistema Mexicano de Alimentos Equivalentes (SMAE).
-- Declarar ni sugerir que el plan está aprobado: siempre es un borrador pendiente de revisión."""
+AUTOVERIFICACIÓN OBLIGATORIA ANTES DE RESPONDER:
+- Cuenta las comidas y comprueba que coincide con el número solicitado.
+- Suma calorías, proteína, carbohidratos y grasa de todos los alimentos.
+- Si una suma queda fuera de tolerancia, cambia cantidades o alimentos y vuelve a sumar.
+- Comprueba otra vez restricciones y alergias.
+- Solo después devuelve el JSON final.
+
+FORMATO Y LÍMITES:
+- Produce EXCLUSIVAMENTE el objeto JSON solicitado, sin markdown ni texto adicional.
+- No diagnostiques ni prescribas tratamiento.
+- No inventes fuentes bibliográficas.
+- No declares ni sugieras que el plan está aprobado; siempre es un borrador pendiente de revisión."""
 
 
 def _build_context(consultation, projected) -> DietPlanGenerationContext:
@@ -106,7 +118,8 @@ def _build_context(consultation, projected) -> DietPlanGenerationContext:
         mealsPerDay=consultation.mealsPerDay, dailyBudget=consultation.dailyBudget,
         foodPreferences=dietary_values(projected.foodPreferences),
         foodsToAvoid=dietary_values(projected.foodsToAvoid),
-        allergiesOrIntolerances=dietary_values(projected.allergiesOrIntolerances),
+        allergiesOrIntolerances=dietary_values(
+            projected.allergiesOrIntolerances),
         notes=consultation.notes,
         targetCalories=projected.targetCalories, proteinGrams=projected.proteinGrams,
         carbohydrateGrams=projected.carbohydrateGrams, fatGrams=projected.fatGrams,
@@ -114,8 +127,43 @@ def _build_context(consultation, projected) -> DietPlanGenerationContext:
     )
 
 
+def _regeneration_feedback(context: DietPlanGenerationContext, previous_plan) -> str:
+    if previous_plan is None:
+        return ""
+    meals = getattr(previous_plan, "meals", None)
+    if meals is None and isinstance(previous_plan, dict):
+        meals = previous_plan.get("meals", [])
+    meal_dicts = [meal.model_dump() if hasattr(meal, "model_dump")
+                  else meal for meal in meals or []]
+    totals = plan_validation.plan_totals(meal_dicts)
+    targets = {
+        "totalCalories": ("calorías", context.targetCalories),
+        "proteinGrams": ("proteína", context.proteinGrams),
+        "carbohydrateGrams": ("carbohidratos", context.carbohydrateGrams),
+        "fatGrams": ("grasa", context.fatGrams),
+    }
+    corrections = []
+    for field, (label, target) in targets.items():
+        current = totals.get(field)
+        if current is None or not target:
+            continue
+        direction = "aumenta" if current < target else "reduce"
+        unit = "g" if field != "totalCalories" else "kcal"
+        corrections.append(
+            f"- {label}: actual {current:.1f} {unit}, objetivo {target:.1f} {unit}; {direction} la cantidad total.")
+    if not corrections:
+        return ""
+    return (
+        "\n\nCorrección obligatoria de la versión anterior:\n"
+        "La versión anterior no alcanzó los objetivos calculados. Ajusta cantidades y alimentos; no te limites "
+        "a repetir el menú. Todos los totales deben quedar dentro de las tolerancias indicadas y los valores "
+        "nutricionales de cada alimento deben ser coherentes con sus cantidades.\n" +
+        "\n".join(corrections)
+    )
+
+
 def build_prompt(context: DietPlanGenerationContext, verified_foods, chunks, food_available: bool, knowledge_available: bool,
-                  instructions: Optional[str] = None) -> tuple[str, str]:
+                 instructions: Optional[str] = None, previous_plan=None) -> tuple[str, str]:
     """Construye el prompt de usuario. Nunca incluye PII (ver DietPlanGenerationContext)."""
     lines = [
         f"Edad: {context.age} años", f"Sexo: {context.sex}",
@@ -131,9 +179,11 @@ def build_prompt(context: DietPlanGenerationContext, verified_foods, chunks, foo
     if context.foodPreferences:
         lines.append("Preferencias: " + ", ".join(context.foodPreferences))
     if context.foodsToAvoid:
-        lines.append("Alimentos a evitar (NO incluir bajo ninguna circunstancia): " + ", ".join(context.foodsToAvoid))
+        lines.append("Alimentos a evitar (NO incluir bajo ninguna circunstancia): " +
+                     ", ".join(context.foodsToAvoid))
     if context.allergiesOrIntolerances:
-        lines.append("Alergias/intolerancias (NO incluir bajo ninguna circunstancia): " + ", ".join(context.allergiesOrIntolerances))
+        lines.append("Alergias/intolerancias (NO incluir bajo ninguna circunstancia): " +
+                     ", ".join(context.allergiesOrIntolerances))
     if context.notes:
         lines.append(f"Notas nutricionales: {context.notes}")
 
@@ -144,8 +194,9 @@ def build_prompt(context: DietPlanGenerationContext, verified_foods, chunks, foo
         f"Fat: {context.fatGrams} g\n"
         f"Fiber target: {context.fiberGrams} g\n"
         f"Water target: {context.waterLiters} L\n"
+        "Tolerancias de aceptación: calorías ±5%; proteína, carbohidratos y grasa ±10%.\n"
         "Estos valores YA fueron calculados de forma determinística. No los recalcules ni los cambies; "
-        "distribuye el menú alrededor de ellos."
+        "distribuye el menú alrededor de ellos y verifica las sumas antes de responder."
     )
 
     food_block = ("Base alimentaria estructurada no disponible todavía. No afirmes que las cantidades "
@@ -158,7 +209,7 @@ def build_prompt(context: DietPlanGenerationContext, verified_foods, chunks, foo
         food_block = "Base alimentaria estructurada disponible, pero sin coincidencias para las preferencias indicadas."
 
     knowledge_block = ("No hay documentos de conocimiento clínico autorizados todavía. No cites ninguna fuente "
-                        "bibliográfica: deja las recomendaciones sin atribución.")
+                       "bibliográfica: deja las recomendaciones sin atribución.")
     if knowledge_available:
         knowledge_block = "Contexto de guías autorizadas (no cites ninguna fuente distinta a estas):\n" + "\n".join(
             f"- {chunk.documentName}: {chunk.content[:500]}" for chunk in chunks)
@@ -171,11 +222,14 @@ def build_prompt(context: DietPlanGenerationContext, verified_foods, chunks, foo
             "reglas del sistema: no pueden cambiar la energía objetivo ni los macronutrientes, no pueden "
             "anular restricciones ni alergias declaradas, no pueden solicitar tratamiento clínico):\n" + clipped
         )
+    correction_block = _regeneration_feedback(context, previous_plan)
 
     user_prompt = (
         "Datos del paciente (anonimizados):\n" + "\n".join(lines) + "\n\n"
-        "Requerimientos ya calculados (fuente de verdad; no los repitas de forma distinta):\n" + requirements + "\n\n"
-        + food_block + "\n\n" + knowledge_block + instructions_block + "\n\n"
+        "Requerimientos ya calculados (fuente de verdad; no los repitas de forma distinta):\n" +
+        requirements + "\n\n"
+        + food_block + "\n\n" + knowledge_block +
+        correction_block + instructions_block + "\n\n"
         "Genera el borrador en JSON con exactamente este formato (sin markdown, sin texto fuera del JSON):\n"
         '{"summary": "<resumen breve>", "meals": [{"mealType": "<tipo>", "name": "<nombre del platillo>", '
         '"foods": [{"foodName": "<alimento>", "quantity": <numero>, "unit": "<unidad>", '
@@ -238,7 +292,7 @@ def _meals_as_dicts(generated: GeneratedDietPlan) -> list:
 
 
 def run_validations(context: DietPlanGenerationContext, generated: GeneratedDietPlan, food_available: bool, knowledge_available: bool,
-                     *, verified_food_count: int = 0, total_food_count: int = 0) -> list:
+                    *, verified_food_count: int = 0, total_food_count: int = 0) -> list:
     """Validaciones deterministas post-generación. Delega la severidad/bloqueo en
     `plan_validation` (PlanValidationService), única fuente de verdad compartida
     con la revalidación tras edición manual (Fase 5). Nunca le pide al LLM que decida.
@@ -250,18 +304,20 @@ def run_validations(context: DietPlanGenerationContext, generated: GeneratedDiet
     meals = _meals_as_dicts(generated)
     restricted_terms = context.foodsToAvoid + context.allergiesOrIntolerances
     validations = plan_validation.validate_meals(meals, meals_per_day=context.mealsPerDay,
-        target_calories=context.targetCalories, restricted_terms=restricted_terms)
+                                                 target_calories=context.targetCalories,
+                                                 target_macros={"proteinGrams": context.proteinGrams, "carbohydrateGrams": context.carbohydrateGrams,
+                                                                "fatGrams": context.fatGrams}, restricted_terms=restricted_terms)
 
     if not food_available:
         validations.append(_validation("WARNING", "FOOD_DATABASE_UNAVAILABLE",
-            "La base alimentaria estructurada aún no está configurada.", False))
+                                       "La base alimentaria estructurada aún no está configurada.", False))
     elif verified_food_count < total_food_count:
         validations.append(_validation("INFO", "FOOD_NUTRIENTS_PARTIALLY_VERIFIED",
-            f"{verified_food_count} de {total_food_count} alimento(s) verificado(s) contra BAM (coincidencia "
-            f"exacta y unidad en gramos); el resto conserva el valor propuesto por el LLM sin verificar.", False))
+                                       f"{verified_food_count} de {total_food_count} alimento(s) verificado(s) contra BAM (coincidencia "
+                                       f"exacta y unidad en gramos); el resto conserva el valor propuesto por el LLM sin verificar.", False))
     if not knowledge_available:
         validations.append(_validation("WARNING", "KNOWLEDGE_BASE_UNAVAILABLE",
-            "La base de conocimiento documental aún no está configurada. El borrador fue generado sin contexto RAG.", False))
+                                       "La base de conocimiento documental aún no está configurada. El borrador fue generado sin contexto RAG.", False))
 
     return validations
 
@@ -271,16 +327,42 @@ def plan_metrics(generated: GeneratedDietPlan) -> dict:
     return plan_validation.plan_totals(_meals_as_dicts(generated))
 
 
+def _nutrition_retry_feedback(context: DietPlanGenerationContext, generated: GeneratedDietPlan,
+                              validations: list[dict]) -> str:
+    totals = plan_metrics(generated)
+    targets = {
+        "totalCalories": ("calorías", context.targetCalories, "kcal"),
+        "proteinGrams": ("proteína", context.proteinGrams, "g"),
+        "carbohydrateGrams": ("carbohidratos", context.carbohydrateGrams, "g"),
+        "fatGrams": ("grasa", context.fatGrams, "g"),
+    }
+    lines = []
+    for field, (label, target, unit) in targets.items():
+        current = totals.get(field)
+        if current is not None:
+            lines.append(
+                f"- {label}: generado {current:.1f} {unit}; objetivo {target:.1f} {unit}.")
+    errors = [item["message"]
+              for item in validations if item.get("isBlocking")]
+    return (
+        "\n\nCORRECCIÓN NUTRICIONAL OBLIGATORIA: la respuesta anterior era JSON válido, "
+        "pero no cumplía las reglas. Genera un plan nuevo completo; no expliques el error.\n" +
+        "\n".join(lines) + "\nErrores que debes corregir:\n- " + "\n- ".join(errors) +
+        "\nVuelve a contar las comidas y suma de nuevo todos los nutrientes antes de responder."
+    )
+
+
 def _validation_read(row) -> PlanValidationRead:
-    data = {k: v for k, v in row.model_dump().items() if k in PlanValidationRead.model_fields}
+    data = {k: v for k, v in row.model_dump().items(
+    ) if k in PlanValidationRead.model_fields}
     return PlanValidationRead.model_validate(data)
 
 
 async def _sources_read(tx, generation_id) -> list:
     rows = await tx.retrievedsource.find_many(where={"generationId": generation_id}, include={"knowledgeSource": True})
     return [RetrievedSourceRead(id=row.id, knowledgeSourceId=row.knowledgeSourceId,
-        documentName=row.knowledgeSource.documentName, institution=row.knowledgeSource.institution,
-        section=row.section, retrievalScore=row.retrievalScore) for row in rows]
+                                documentName=row.knowledgeSource.documentName, institution=row.knowledgeSource.institution,
+                                section=row.section, retrievalScore=row.retrievalScore) for row in rows]
 
 
 async def _set_stage(db, generation_id: str, stage: GenerationStage) -> None:
@@ -288,7 +370,7 @@ async def _set_stage(db, generation_id: str, stage: GenerationStage) -> None:
 
 
 async def _mark_failed(db, generation_id: str, error_message: str, *, execution_ms: int | None = None,
-                        food_available: bool | None = None, knowledge_available: bool | None = None) -> None:
+                       food_available: bool | None = None, knowledge_available: bool | None = None) -> None:
     data = {"status": "FAILED", "stage": GenerationStage.FAILED.value,
             "errorMessage": (error_message or "")[:2000], "completedAt": now()}
     if execution_ms is not None:
@@ -313,8 +395,9 @@ async def _create_generation_row(db, consultation_id: str, client: LLMClient) ->
 
 def _check_readiness(consultation) -> None:
     data = {field: getattr(consultation, field) for field in
-        ("ageAtConsultation", "weightKg", "heightM", "sex", "activityLevel", "goal", "mealsPerDay")}
-    issues, _ = readiness(data | {"requiresProfessionalReview": consultation.requiresProfessionalReview}, consultation.patient)
+            ("ageAtConsultation", "weightKg", "heightM", "sex", "activityLevel", "goal", "mealsPerDay")}
+    issues, _ = readiness(data | {
+                          "requiresProfessionalReview": consultation.requiresProfessionalReview}, consultation.patient)
     if issues:
         raise CaptureError(422, " ".join(issues))
 
@@ -340,7 +423,7 @@ async def prepare_generation_job(db, consultation_id: str, *, llm_client: LLMCli
 
 
 async def run_generation_job(db, consultation_id: str, *, instructions: Optional[str] = None,
-                              llm_client: LLMClient, generation_id: str, consultation) -> DietPlanGenerationResponse:
+                             llm_client: LLMClient, generation_id: str, consultation, previous_plan=None) -> DietPlanGenerationResponse:
     """Ejecuta el pipeline completo (con una fila de AIGeneration ya creada),
     actualizando `stage` en cada paso real. Usada tanto por el endpoint
     síncrono (generate_draft/regenerate_draft, que esperan a que termine)
@@ -350,7 +433,8 @@ async def run_generation_job(db, consultation_id: str, *, instructions: Optional
         await _set_stage(db, generation_id, GenerationStage.LOADING_CALCULATIONS)
         projected = _check_calculated(consultation)
         context = _build_context(consultation, projected)
-        return await _execute_generation(db, consultation, context, llm_client, generation_id, instructions=instructions)
+        return await _execute_generation(db, consultation, context, llm_client, generation_id,
+                                         instructions=instructions, previous_plan=previous_plan)
     except CaptureError as exc:
         # `_execute_generation` ya marca FAILED con el mensaje específico (p.
         # ej. el motivo real de LLMGenerationError) antes de levantar su
@@ -366,10 +450,10 @@ async def run_generation_job(db, consultation_id: str, *, instructions: Optional
 
 
 async def _run_tracked_generation(db, consultation_id: str, *, instructions: Optional[str] = None,
-                                   llm_client: LLMClient | None = None) -> DietPlanGenerationResponse:
+                                  llm_client: LLMClient | None = None, previous_plan=None) -> DietPlanGenerationResponse:
     generation_id, consultation, client = await prepare_generation_job(db, consultation_id, llm_client=llm_client)
     return await run_generation_job(db, consultation_id, instructions=instructions, llm_client=client,
-                                     generation_id=generation_id, consultation=consultation)
+                                    generation_id=generation_id, consultation=consultation, previous_plan=previous_plan)
 
 
 async def generate_draft(db, consultation_id: str, *, llm_client: LLMClient | None = None) -> DietPlanGenerationResponse:
@@ -380,15 +464,16 @@ async def generate_draft(db, consultation_id: str, *, llm_client: LLMClient | No
 
 
 async def regenerate_draft(db, consultation_id: str, *, instructions: Optional[str] = None,
-                            llm_client: LLMClient | None = None) -> DietPlanGenerationResponse:
+                           llm_client: LLMClient | None = None, previous_plan=None) -> DietPlanGenerationResponse:
     """Fase 5, variante síncrona: nueva versión para una consulta ya calculada.
     `instructions` son datos adicionales del usuario, nunca sustituyen el
     system prompt ni los requerimientos calculados."""
-    return await _run_tracked_generation(db, consultation_id, instructions=instructions, llm_client=llm_client)
+    return await _run_tracked_generation(db, consultation_id, instructions=instructions, llm_client=llm_client,
+                                         previous_plan=previous_plan)
 
 
 async def start_generation_job(db, consultation_id: str, *, instructions: Optional[str] = None,
-                                llm_client: LLMClient | None = None) -> str:
+                               llm_client: LLMClient | None = None) -> str:
     """Corrección de UX: crea la fila de progreso de inmediato y ejecuta el
     resto en segundo plano, para que el llamador (el endpoint /start) pueda
     responder al instante y el frontend haga polling real de /status en vez
@@ -398,7 +483,7 @@ async def start_generation_job(db, consultation_id: str, *, instructions: Option
     async def _background():
         try:
             await run_generation_job(db, consultation_id, instructions=instructions, llm_client=client,
-                                      generation_id=generation_id, consultation=consultation)
+                                     generation_id=generation_id, consultation=consultation)
         except Exception:
             pass  # ya quedó registrado como FAILED por run_generation_job
 
@@ -419,7 +504,7 @@ async def get_generation_status(db, generation_id: str) -> GenerationStatusRead:
 
 
 async def _execute_generation(db, consultation, context: DietPlanGenerationContext, client: LLMClient,
-                               generation_id: str, *, instructions: Optional[str] = None) -> DietPlanGenerationResponse:
+                              generation_id: str, *, instructions: Optional[str] = None, previous_plan=None) -> DietPlanGenerationResponse:
     await _set_stage(db, generation_id, GenerationStage.LOADING_FOOD_DATA)
     food_service = get_food_database_service()
     food_available = food_service.is_available()
@@ -433,42 +518,52 @@ async def _execute_generation(db, consultation, context: DietPlanGenerationConte
     chunks = []
     try:
         query = f"Recomendaciones nutricionales para objetivo {context.goal}, actividad {context.activityLevel}"
-        chunks = rag_engine.knowledge_base_service.search(query, top_k=RAG_TOP_K)
+        chunks = rag_engine.knowledge_base_service.search(
+            query, top_k=RAG_TOP_K)
         knowledge_available = len(chunks) > 0
     except Exception:
         chunks, knowledge_available = [], False
 
     await _set_stage(db, generation_id, GenerationStage.BUILDING_CONTEXT)
     system_prompt, user_prompt = build_prompt(context, verified_foods, chunks, food_available, knowledge_available,
-                                               instructions=instructions)
+                                              instructions=instructions, previous_plan=previous_plan)
 
     await _set_stage(db, generation_id, GenerationStage.GENERATING_WITH_LLM)
     started = time.monotonic()
-    try:
-        generated, _raw_output = await client.generate_structured(
-            system_prompt=system_prompt, user_prompt=user_prompt, response_model=GeneratedDietPlan)
-    except LLMGenerationError as exc:
-        execution_ms = int((time.monotonic() - started) * 1000)
-        await _mark_failed(db, generation_id, str(exc), execution_ms=execution_ms,
-            food_available=food_available, knowledge_available=knowledge_available)
-        raise CaptureError(502, PROVIDER_FAILURE_MESSAGE, existing_id=generation_id) from None
-    execution_ms = int((time.monotonic() - started) * 1000)
+    nutrition_attempt = 0
+    while True:
+        try:
+            generated, _raw_output = await client.generate_structured(
+                system_prompt=system_prompt, user_prompt=user_prompt, response_model=GeneratedDietPlan)
+        except LLMGenerationError as exc:
+            execution_ms = int((time.monotonic() - started) * 1000)
+            await _mark_failed(db, generation_id, str(exc), execution_ms=execution_ms,
+                               food_available=food_available, knowledge_available=knowledge_available)
+            raise CaptureError(502, PROVIDER_FAILURE_MESSAGE,
+                               existing_id=generation_id) from None
 
-    # Precedencia BAM > LLM (sección 24) y validaciones deterministas: se
-    # calculan ANTES de abrir la transacción de persistencia (no dependen de
-    # ningún id generado por la DB), reflejando fielmente que "validar la
-    # respuesta" es un paso real distinto de "guardar el plan".
-    await _set_stage(db, generation_id, GenerationStage.VALIDATING_RESPONSE)
-    verified_food_count = 0
-    total_food_count = 0
-    if food_available:
-        for meal in generated.meals:
-            for food in meal.foods:
-                total_food_count += 1
-                if _apply_bam_precedence(food, food_service):
-                    verified_food_count += 1
-    validations = run_validations(context, generated, food_available, knowledge_available,
-                                   verified_food_count=verified_food_count, total_food_count=total_food_count)
+        # Precedencia BAM > LLM y validaciones deterministas se ejecutan antes
+        # de decidir si hace falta otra respuesta nutricional.
+        await _set_stage(db, generation_id, GenerationStage.VALIDATING_RESPONSE)
+        verified_food_count = 0
+        total_food_count = 0
+        if food_available:
+            for meal in generated.meals:
+                for food in meal.foods:
+                    total_food_count += 1
+                    if _apply_bam_precedence(food, food_service):
+                        verified_food_count += 1
+        validations = run_validations(context, generated, food_available, knowledge_available,
+                                      verified_food_count=verified_food_count, total_food_count=total_food_count)
+        blocking = any(item.get("isBlocking") for item in validations)
+        if not blocking or nutrition_attempt >= NUTRITION_RETRY_COUNT:
+            break
+        nutrition_attempt += 1
+        user_prompt += _nutrition_retry_feedback(
+            context, generated, validations)
+        await _set_stage(db, generation_id, GenerationStage.GENERATING_WITH_LLM)
+
+    execution_ms = int((time.monotonic() - started) * 1000)
     metrics = plan_metrics(generated)
 
     await _set_stage(db, generation_id, GenerationStage.PERSISTING)
@@ -501,7 +596,7 @@ async def _execute_generation(db, consultation, context: DietPlanGenerationConte
                 "smaeEquivalent": None, "notes": food.notes,
             } for food in meal.foods]
             meals_data.append({"mealType": meal.mealType, "name": meal.name,
-                "sortOrder": sort_order, "foods": {"create": foods_data}})
+                               "sortOrder": sort_order, "foods": {"create": foods_data}})
 
         plan = await tx.dietplan.create(data={
             "consultationId": consultation.id, "version": version, "status": "DRAFT",

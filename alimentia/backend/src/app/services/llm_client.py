@@ -24,7 +24,13 @@ DEFAULT_TEMPERATURE = float(os.getenv("ALIMENTIA_LLM_TEMPERATURE", "0.2"))
 # más bajo dispara el fallback sin response_format y puede apilar generaciones
 # huérfanas en el proveedor (cada intento fallido deja la generación anterior corriendo
 # del lado del servidor sin cancelarla).
-DEFAULT_TIMEOUT_SECONDS = float(os.getenv("ALIMENTIA_LLM_TIMEOUT_SECONDS", "240"))
+DEFAULT_TIMEOUT_SECONDS = float(
+    os.getenv("ALIMENTIA_LLM_TIMEOUT_SECONDS", "240"))
+try:
+    STRUCTURED_RETRY_COUNT = min(
+        max(int(os.getenv("ALIMENTIA_STRUCTURED_RETRY_COUNT", "3")), 0), 5)
+except ValueError:
+    STRUCTURED_RETRY_COUNT = 3
 
 
 def llm_status() -> dict:
@@ -56,17 +62,19 @@ class LLMClient:
     """Envoltorio genérico compatible con OpenAI/Ollama. No guarda API keys reales."""
 
     def __init__(self, base_url: str | None = None, model: str | None = None, timeout: float | None = None):
-        self.base_url = base_url or os.getenv("LLM_API_URL", "http://ollama:11434/v1")
+        self.base_url = base_url or os.getenv(
+            "LLM_API_URL", "http://ollama:11434/v1")
         self.model = model or os.getenv("LLM_MODEL", "gemma4")
         self.timeout = timeout if timeout is not None else DEFAULT_TIMEOUT_SECONDS
-        self._client = AsyncOpenAI(base_url=self.base_url, api_key="EMPTY", timeout=self.timeout)
+        self._client = AsyncOpenAI(
+            base_url=self.base_url, api_key="EMPTY", timeout=self.timeout)
 
     @property
     def provider_name(self) -> str:
         return "ollama" if "ollama" in self.base_url else "openai-compatible"
 
     async def generate_structured(self, *, system_prompt: str, user_prompt: str,
-                                   response_model: type[T], temperature: float = DEFAULT_TEMPERATURE) -> tuple[T, str]:
+                                  response_model: type[T], temperature: float = DEFAULT_TEMPERATURE) -> tuple[T, str]:
         """Llama al proveedor y valida la respuesta contra `response_model`.
 
         Devuelve (instancia validada, texto crudo del modelo). Lanza
@@ -74,31 +82,47 @@ class LLMClient:
         o el JSON no cumple la estructura esperada. Nunca lanza una excepción
         de red/parseo sin envolver.
         """
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        try:
-            response = await self._client.chat.completions.create(
-                model=self.model, messages=messages, temperature=temperature,
-                response_format={"type": "json_object"},
-            )
-        except Exception:
-            # No todos los backends OpenAI-compatibles soportan response_format; reintentamos sin él.
+        messages = [{"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}]
+        for attempt in range(STRUCTURED_RETRY_COUNT + 1):
             try:
                 response = await self._client.chat.completions.create(
-                    model=self.model, messages=messages, temperature=temperature)
+                    model=self.model, messages=messages, temperature=temperature,
+                    response_format={"type": "json_object"},
+                )
+            except Exception:
+                # No todos los backends OpenAI-compatibles soportan response_format; reintentamos sin él.
+                try:
+                    response = await self._client.chat.completions.create(
+                        model=self.model, messages=messages, temperature=temperature)
+                except Exception as exc:
+                    raise LLMGenerationError(
+                        f"El proveedor LLM no respondió: {exc}") from exc
+
+            raw = response.choices[0].message.content if response.choices else None
+            if not raw or not raw.strip():
+                raise LLMGenerationError(
+                    "El proveedor LLM devolvió una respuesta vacía.")
+
+            cleaned = _extract_json(raw)
+            try:
+                parsed = response_model.model_validate_json(cleaned)
             except Exception as exc:
-                raise LLMGenerationError(f"El proveedor LLM no respondió: {exc}") from exc
-
-        raw = response.choices[0].message.content if response.choices else None
-        if not raw or not raw.strip():
-            raise LLMGenerationError("El proveedor LLM devolvió una respuesta vacía.")
-
-        cleaned = _extract_json(raw)
-        try:
-            parsed = response_model.model_validate_json(cleaned)
-        except Exception as exc:
-            raise LLMGenerationError(
-                f"La respuesta del modelo no cumple la estructura esperada: {exc}", raw_output=raw) from exc
-        return parsed, raw
+                if attempt < STRUCTURED_RETRY_COUNT:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "La respuesta anterior no cumple el esquema JSON requerido. Corrígela y devuelve "
+                            "únicamente un objeto JSON válido. El campo 'meals' debe ser una lista cuyos elementos "
+                            "sean objetos de comida con 'mealType', 'name' y 'foods'; el campo 'recommendations' "
+                            "debe estar únicamente al nivel raíz, nunca dentro de 'meals'. Error de validación: "
+                            f"{exc}"
+                        ),
+                    })
+                    continue
+                raise LLMGenerationError(
+                    f"La respuesta del modelo no cumple la estructura esperada: {exc}", raw_output=raw) from exc
+            return parsed, raw
 
 
 # --- Ruta heredada (pre-Fase 1), usada por POST /api/v1/generate-draft -----
