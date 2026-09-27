@@ -7,7 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from qdrant_client import QdrantClient
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.core import VectorStoreIndex
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from prisma import Prisma
 from app.repositories.legacy import list_plans, save_legacy_draft
 from app.repositories.knowledge import sync_knowledge_sources
@@ -23,7 +22,10 @@ from app.schemas.plan import DietPlanDraft
 from app.services.calculator import get_nutritional_baseline
 from app.services.llm_client import generate_diet_plan_draft
 from app.services.food_db import get_exact_macros
-from app.services.rag_engine import build_knowledge_base, KNOWLEDGE_COLLECTION, knowledge_path
+from app.services.rag_engine import (
+    build_knowledge_base, KNOWLEDGE_COLLECTION, knowledge_path, get_embedding_model,
+)
+from app.services.ollama_runtime import preload_ollama_model
 
 # Instanciamos el cliente de Prisma
 db = Prisma()
@@ -41,6 +43,17 @@ async def lifespan(app: FastAPI):
         await sync_knowledge_sources(db, knowledge_path())
     except Exception as exc:
         print(f"Aviso: no fue posible sincronizar fuentes de conocimiento. {exc}")
+
+    # Cargar el encoder una vez al inicio evita que la primera búsqueda RAG
+    # tenga que inicializar el modelo durante una generación de plan.
+    try:
+        get_embedding_model()
+        print("Modelo de embeddings RAG listo y reutilizable.")
+    except Exception as exc:
+        print(f"Aviso: no fue posible precargar el modelo de embeddings. {exc}")
+
+    # Descarga si es necesario y mantiene el modelo listo desde el inicio de sesión.
+    await preload_ollama_model()
 
     print("⏳ Iniciando motor RAG en segundo plano...")
     threading.Thread(target=build_knowledge_base).start()
@@ -66,8 +79,6 @@ app.add_middleware(
 )
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-embed_model = HuggingFaceEmbedding(
-    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
 # --- CONEXIÓN SEGURA PEREZOSA (LAZY LOADING) ---
 
@@ -79,7 +90,7 @@ def get_clinical_retriever():
         vector_store = QdrantVectorStore(
             client=client_qdrant, collection_name=KNOWLEDGE_COLLECTION)
         index = VectorStoreIndex.from_vector_store(
-            vector_store=vector_store, embed_model=embed_model)
+            vector_store=vector_store, embed_model=get_embedding_model())
         return index.as_retriever(similarity_top_k=2)
     except Exception as e:
         print(f"Aviso: Qdrant no listo. {e}")

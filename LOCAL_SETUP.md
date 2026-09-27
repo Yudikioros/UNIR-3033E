@@ -53,18 +53,27 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 New-Item -ItemType Directory -Force data/pdfs, data/tables, data/db | Out-Null
 docker compose config --quiet
 docker compose up -d --build
-docker compose exec ollama ollama pull llama3.2:3b
 docker compose logs --tail 100 backend
 ```
 
-Si un comando falla, resuelve ese error antes de continuar. Si cambias `LLM_MODEL`
-en `.env`, utiliza el mismo nombre en `ollama pull` y vuelve a ejecutar
-`docker compose up -d` para actualizar la configuración del backend.
+Al iniciar el backend, este descarga el modelo configurado si aún no existe y
+lo calienta antes de aceptar peticiones. La primera inicialización puede tardar
+por la descarga (aproximadamente 2 GB para el modelo predeterminado); los datos
+quedan en `alimentia/data/ollama`. En los siguientes arranques no vuelve a
+descargarlo, aunque Ollama sí necesita cargarlo en memoria. `OLLAMA_KEEP_ALIVE=-1`
+lo mantiene residente mientras Ollama esté encendido. Se puede cambiar a una
+duración como `10m` para liberar memoria tras un periodo sin solicitudes.
+
+Si cambias `LLM_MODEL` en `.env`, reinicia los servicios con
+`docker compose up -d --build`; la rutina de inicio descargará y precargará ese
+modelo automáticamente. Para desactivar la precarga (por ejemplo, si se usa un
+proveedor OpenAI-compatible externo), configura `ALIMENTIA_OLLAMA_PRELOAD=false`.
 
 La primera ejecución descarga imágenes, dependencias y el modelo de embeddings
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` desde Hugging Face.
-El backend carga ese modelo antes de aceptar peticiones. Espera a que los logs
-indiquen `Application startup complete` y verifica:
+El backend lo carga una vez al inicio de cada sesión y lo reutiliza para RAG,
+ingesta y consultas; espera a que los logs indiquen `Application startup complete`
+y verifica:
 
 ```powershell
 Invoke-RestMethod http://localhost:8080/health
@@ -111,11 +120,19 @@ docker compose down
 `down` detiene los servicios; los datos permanecen en `alimentia/data/`.
 Para volver a iniciar: `docker compose up -d`.
 
-En otro equipo con NVIDIA y soporte de GPU configurado en Docker:
+El archivo Compose principal no exige GPU y funciona con CPU. En un equipo con
+GPU NVIDIA y soporte de GPU ya configurado en Docker Desktop, puede activarse la
+aceleración opcional así:
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
+
+En equipos sin GPU NVIDIA, usa solo `docker compose up -d --build` como arriba;
+no se debe incluir `docker-compose.gpu.yml`. La generación usa el mismo modelo y
+las mismas validaciones en ambos casos; la GPU cambia el tiempo de inferencia,
+no los criterios del plan. Docker debe reconocer la GPU antes de aplicar el
+archivo opcional.
 
 ## Solo la interfaz, sin Docker
 
