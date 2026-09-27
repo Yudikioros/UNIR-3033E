@@ -296,6 +296,13 @@ class KnowledgeBaseScopeFilterTests(unittest.TestCase):
     """Sección 13: un documento fuera del alcance del MVP (adult_general) no
     debe alimentar un borrador general aunque el RAG lo recupere."""
 
+    def setUp(self):
+        self.previous_embedding_model = rag_engine._embedding_model
+        rag_engine._embedding_model = None
+
+    def tearDown(self):
+        rag_engine._embedding_model = self.previous_embedding_model
+
     def test_chunk_fuera_de_alcance_se_descarta(self):
         service = rag_engine.KnowledgeBaseService()
         nodes = [_FakeNode(
@@ -327,6 +334,18 @@ class KnowledgeBaseScopeFilterTests(unittest.TestCase):
                 patch.object(service, '_retriever', return_value=_FakeRetriever(nodes)):
             results = service.search('cualquier consulta')
         self.assertEqual(len(results), 1)
+
+    def test_modelo_de_embeddings_se_reutiliza_en_el_proceso(self):
+        previous = rag_engine._embedding_model
+        try:
+            rag_engine._embedding_model = None
+            with patch.object(rag_engine, 'HuggingFaceEmbedding', return_value=object()) as factory:
+                first = rag_engine.get_embedding_model()
+                second = rag_engine.get_embedding_model()
+            self.assertIs(first, second)
+            factory.assert_called_once_with(model_name=rag_engine.EMBEDDING_MODEL_NAME)
+        finally:
+            rag_engine._embedding_model = previous
 
 
 class ResourcesEndpointTests(unittest.IsolatedAsyncioTestCase):

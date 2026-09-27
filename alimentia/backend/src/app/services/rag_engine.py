@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -56,6 +57,19 @@ KNOWLEDGE_COLLECTION = "alimentia_knowledge_v1"
 # alimentar un borrador general aunque esté indexado. Una fuente sin `scope`
 # declarado en el manifiesto (legado) no se filtra: se asume sin restricción.
 ALLOWED_SCOPES = {"adult_general"}
+EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+_embedding_model = None
+_embedding_model_lock = threading.Lock()
+
+
+def get_embedding_model():
+    """Carga el modelo de embeddings una sola vez y lo comparte en el proceso."""
+    global _embedding_model
+    if _embedding_model is None:
+        with _embedding_model_lock:
+            if _embedding_model is None:
+                _embedding_model = HuggingFaceEmbedding(model_name=EMBEDDING_MODEL_NAME)
+    return _embedding_model
 
 
 def knowledge_path() -> Path:
@@ -150,8 +164,7 @@ def build_knowledge_base(wait_for_qdrant: bool = True) -> dict:
                 "Base vectorial clínica vacía o no inicializada. Se indexarán %s documento(s) autorizado(s).",
                 len(documents))
 
-        embed_model = HuggingFaceEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        embed_model = get_embedding_model()
         vector_store = QdrantVectorStore(
             client=client, collection_name=KNOWLEDGE_COLLECTION)
         storage_context = StorageContext.from_defaults(
@@ -221,8 +234,7 @@ def index_source(source: dict) -> dict:
         )
 
     try:
-        embed_model = HuggingFaceEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+        embed_model = get_embedding_model()
         client = qdrant_client.QdrantClient(url=QDRANT_URL)
         vector_store = QdrantVectorStore(client=client, collection_name=KNOWLEDGE_COLLECTION)
         if client.collection_exists(KNOWLEDGE_COLLECTION):
@@ -300,8 +312,7 @@ class KnowledgeBaseService:
 
     def search(self, query: str, top_k: int = 3) -> list[RetrievedKnowledgeChunk]:
         try:
-            embed_model = HuggingFaceEmbedding(
-                model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+            embed_model = get_embedding_model()
             retriever = self._retriever(embed_model)
             nodes = retriever.retrieve(query)
         except Exception as exc:
