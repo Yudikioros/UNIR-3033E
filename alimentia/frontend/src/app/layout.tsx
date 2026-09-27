@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Link from "next/link";
+import { BookOpen } from "lucide-react";
 import { FloatingAssistant } from "../components/assistant/floating-assistant";
 
 export const metadata: Metadata = {
@@ -165,6 +166,13 @@ export default function RootLayout({
                 </svg>
                 Configuración
               </Link>
+              <Link
+                href="/about"
+                className="flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-slate-800 transition-colors focus:bg-blue-600 focus:text-white"
+              >
+                <BookOpen className="w-5 h-5 opacity-70" aria-hidden="true" />
+                Acerca del proyecto
+              </Link>
             </nav>
           </div>
           <div className="p-4 border-t border-slate-800">
@@ -181,7 +189,7 @@ export default function RootLayout({
         </aside>
 
         {/* ================= CONTENEDOR DINÁMICO ================= */}
-        <main className="flex-1 flex flex-col h-full overflow-hidden relative">
+        <main className="flex-1 min-w-0 flex flex-col h-full overflow-hidden relative">
           {children}
           <FloatingAssistant />
         </main>
