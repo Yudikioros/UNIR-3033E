@@ -7,10 +7,6 @@ from typing import Optional
 
 import pypdf
 from pydantic import BaseModel
-from llama_index.core import Document, SimpleDirectoryReader, VectorStoreIndex, StorageContext
-from llama_index.core.readers.base import BaseReader
-from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import qdrant_client
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
@@ -19,47 +15,46 @@ from app.services import knowledge_manifest
 logger = logging.getLogger("uvicorn.error")
 
 
-class _PyPdfReader(BaseReader):
-    """Extractor de texto de PDF explícito con `pypdf`.
-
-    Sin el paquete opcional `llama-index-readers-file`, el `SimpleDirectoryReader`
-    no tiene un lector dedicado para `.pdf` y decodifica el binario del archivo
-    como si fuera texto plano (produce basura ilegible / sintaxis interna del
-    PDF, nunca el contenido real). Este lector usa `pypdf` -ya dependencia del
-    proyecto y verificado manualmente contra los PDFs reales- para extraer
-    texto legible página por página.
-    """
+class _PyPdfReader:
+    """Extrae el texto de cada página PDF con `pypdf`."""
 
     def load_data(self, file, extra_info=None):
+        from llama_index.core import Document
+
         reader = pypdf.PdfReader(str(file))
         pages = [page.extract_text() or "" for page in reader.pages]
-        text = "\n\n".join(page_text for page_text in pages if page_text.strip())
+        text = "\n\n".join(
+            page_text for page_text in pages if page_text.strip())
         if not text.strip():
-            # Sin texto extraíble (p. ej. PDF escaneado sin capa de texto real):
-            # nunca se devuelve un Document vacío. Uno vacío terminaría
-            # indexado como un chunk sin contenido real, y la verificación de
-            # indexación (sección 6/10) debe poder distinguir "se indexó" de
-            # "se indexó, pero no sirve para nada" -esto último se trata como
-            # "sin contenido extraíble", igual que un archivo sin páginas.
+            # Evita indexar documentos vacíos o sin texto utilizable.
             return []
         metadata = dict(extra_info or {})
         metadata.setdefault("file_name", Path(file).name)
         metadata.setdefault("file_path", str(file))
         return [Document(text=text, metadata=metadata)]
 
+
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-# Fase 3.5: renombrada desde "medical_guidelines" (heredado del prototipo).
-# Sin documentos cargados todavía, por lo que no hay puntos que migrar.
 KNOWLEDGE_COLLECTION = "alimentia_knowledge_v1"
 
-# Alcance del MVP (adultos sin patologías clínicas complejas). Un documento
-# fuera de este alcance (pediatría, embarazo/lactancia, patologías) no debe
-# alimentar un borrador general aunque esté indexado. Una fuente sin `scope`
-# declarado en el manifiesto (legado) no se filtra: se asume sin restricción.
+# Filtra fuentes según el alcance declarado en el manifiesto.
 ALLOWED_SCOPES = {"adult_general"}
 EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 _embedding_model = None
 _embedding_model_lock = threading.Lock()
+
+
+def HuggingFaceEmbedding(*args, **kwargs):
+    from llama_index.embeddings.huggingface import HuggingFaceEmbedding as Embedding
+
+    return Embedding(*args, **kwargs)
+
+
+def _llama_index_components():
+    from llama_index.core import SimpleDirectoryReader, StorageContext, VectorStoreIndex
+    from llama_index.vector_stores.qdrant import QdrantVectorStore
+
+    return SimpleDirectoryReader, StorageContext, VectorStoreIndex, QdrantVectorStore
 
 
 def get_embedding_model():
@@ -68,7 +63,8 @@ def get_embedding_model():
     if _embedding_model is None:
         with _embedding_model_lock:
             if _embedding_model is None:
-                _embedding_model = HuggingFaceEmbedding(model_name=EMBEDDING_MODEL_NAME)
+                _embedding_model = HuggingFaceEmbedding(
+                    model_name=EMBEDDING_MODEL_NAME)
     return _embedding_model
 
 
@@ -82,10 +78,11 @@ def _ensure_knowledge_dir(path: Path) -> Path:
 
 
 def knowledge_base_status() -> dict:
-    """Estado del recurso basado en el manifiesto y el sistema de archivos, sin tocar Qdrant."""
+    """Informa qué fuentes autorizadas están presentes, sin consultar Qdrant."""
     knowledge_dir = knowledge_path()
     manifest = knowledge_manifest.load_manifest()
-    authorized = knowledge_manifest.authorized_documents(knowledge_dir) if knowledge_dir.exists() else []
+    authorized = knowledge_manifest.authorized_documents(
+        knowledge_dir) if knowledge_dir.exists() else []
     return {
         "ready": len(authorized) > 0,
         "documentCount": len(authorized),
@@ -111,6 +108,7 @@ def build_knowledge_base(wait_for_qdrant: bool = True) -> dict:
         time.sleep(5)
 
     knowledge_dir = _ensure_knowledge_dir(knowledge_path())
+    SimpleDirectoryReader, StorageContext, VectorStoreIndex, QdrantVectorStore = _llama_index_components()
 
     authorized = knowledge_manifest.authorized_documents(knowledge_dir)
     if not authorized:
@@ -140,7 +138,8 @@ def build_knowledge_base(wait_for_qdrant: bool = True) -> dict:
 
     by_filename = {source["path"].name: source for source in authorized}
     for document in documents:
-        file_name = Path(document.metadata.get("file_name") or document.metadata.get("file_path", "")).name
+        file_name = Path(document.metadata.get("file_name")
+                         or document.metadata.get("file_path", "")).name
         source = by_filename.get(file_name)
         if source:
             document.metadata.update(
@@ -199,10 +198,12 @@ def count_source_chunks(manifest_source_id: str) -> int:
         client = qdrant_client.QdrantClient(url=QDRANT_URL)
         if not client.collection_exists(KNOWLEDGE_COLLECTION):
             return 0
-        result = client.count(KNOWLEDGE_COLLECTION, count_filter=_source_filter(manifest_source_id), exact=True)
+        result = client.count(KNOWLEDGE_COLLECTION, count_filter=_source_filter(
+            manifest_source_id), exact=True)
         return result.count
     except Exception as exc:
-        logger.warning("No fue posible contar los chunks de '%s' en Qdrant: %s", manifest_source_id, exc)
+        logger.warning(
+            "No fue posible contar los chunks de '%s' en Qdrant: %s", manifest_source_id, exc)
         return 0
 
 
@@ -215,12 +216,14 @@ def index_source(source: dict) -> dict:
     `{"status": "indexed"|"no_content"|"error", "chunkCount": int, "message": str|None}`.
     """
     path = source["path"]
+    SimpleDirectoryReader, StorageContext, VectorStoreIndex, QdrantVectorStore = _llama_index_components()
     try:
         documents = SimpleDirectoryReader(
             input_files=[str(path)], file_extractor={".pdf": _PyPdfReader()},
         ).load_data()
     except Exception as exc:
-        logger.error("Error leyendo el documento '%s' para indexar: %s", path, exc)
+        logger.error(
+            "Error leyendo el documento '%s' para indexar: %s", path, exc)
         return {"status": "error", "chunkCount": 0, "message": str(exc)}
 
     if not documents:
@@ -236,12 +239,14 @@ def index_source(source: dict) -> dict:
     try:
         embed_model = get_embedding_model()
         client = qdrant_client.QdrantClient(url=QDRANT_URL)
-        vector_store = QdrantVectorStore(client=client, collection_name=KNOWLEDGE_COLLECTION)
+        vector_store = QdrantVectorStore(
+            client=client, collection_name=KNOWLEDGE_COLLECTION)
         if client.collection_exists(KNOWLEDGE_COLLECTION):
             # Indexación incremental real: se adjunta al índice existente y
             # solo se insertan los nodos de ESTE documento -nunca se
             # reconstruye la colección completa por dar de alta una fuente-.
-            index = VectorStoreIndex.from_vector_store(vector_store=vector_store, embed_model=embed_model)
+            index = VectorStoreIndex.from_vector_store(
+                vector_store=vector_store, embed_model=embed_model)
             for document in documents:
                 index.insert(document)
         else:
@@ -250,11 +255,13 @@ def index_source(source: dict) -> dict:
             # necesita que ya exista). Se crea con este único documento -no
             # es una reconstrucción de nada preexistente, porque no había
             # nada preexistente-.
-            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            storage_context = StorageContext.from_defaults(
+                vector_store=vector_store)
             VectorStoreIndex.from_documents(
                 documents, storage_context=storage_context, embed_model=embed_model)
     except Exception as exc:
-        logger.error("Error indexando el documento '%s' en Qdrant: %s", path, exc)
+        logger.error(
+            "Error indexando el documento '%s' en Qdrant: %s", path, exc)
         return {"status": "error", "chunkCount": 0, "message": str(exc)}
 
     chunk_count = count_source_chunks(source["id"])
@@ -276,7 +283,8 @@ def delete_source_chunks(manifest_source_id: str) -> int:
     before = count_source_chunks(manifest_source_id)
     if before == 0:
         return 0
-    client.delete(KNOWLEDGE_COLLECTION, points_selector=_source_filter(manifest_source_id))
+    client.delete(KNOWLEDGE_COLLECTION,
+                  points_selector=_source_filter(manifest_source_id))
     return before
 
 
@@ -303,20 +311,33 @@ class KnowledgeBaseService:
     def __init__(self, collection_name: str = KNOWLEDGE_COLLECTION, qdrant_url: str = QDRANT_URL):
         self.collection_name = collection_name
         self.qdrant_url = qdrant_url
+        self._cached_retriever = None
+        self._retriever_lock = threading.Lock()
 
     def _retriever(self, embed_model):
+        _, _, VectorStoreIndex, QdrantVectorStore = _llama_index_components()
         client = qdrant_client.QdrantClient(url=self.qdrant_url)
-        vector_store = QdrantVectorStore(client=client, collection_name=self.collection_name)
-        index = VectorStoreIndex.from_vector_store(vector_store=vector_store, embed_model=embed_model)
+        vector_store = QdrantVectorStore(
+            client=client, collection_name=self.collection_name)
+        index = VectorStoreIndex.from_vector_store(
+            vector_store=vector_store, embed_model=embed_model)
         return index.as_retriever(similarity_top_k=5)
+
+    def _get_retriever(self, embed_model):
+        if self._cached_retriever is None:
+            with self._retriever_lock:
+                if self._cached_retriever is None:
+                    self._cached_retriever = self._retriever(embed_model)
+        return self._cached_retriever
 
     def search(self, query: str, top_k: int = 3) -> list[RetrievedKnowledgeChunk]:
         try:
             embed_model = get_embedding_model()
-            retriever = self._retriever(embed_model)
+            retriever = self._get_retriever(embed_model)
             nodes = retriever.retrieve(query)
         except Exception as exc:
-            logger.warning("Búsqueda documental no disponible todavía: %s", exc)
+            logger.warning(
+                "Búsqueda documental no disponible todavía: %s", exc)
             return []
 
         results = []

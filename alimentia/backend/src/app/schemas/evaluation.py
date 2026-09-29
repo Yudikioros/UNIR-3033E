@@ -1,8 +1,6 @@
-"""Contrato de métricas de evaluación por caso (Fase 6, Parte C).
+"""Contrato de métricas de evaluación por plan.
 
-Solo expone métricas AUTOMÁTICAS, reconstruidas de datos ya persistidos.
-Nunca inventa métricas experimentales (tiempo manual, satisfacción, calidad
-clínica): esas se documentan aparte como pendientes académicos.
+Expone métricas automáticas derivadas de los datos persistidos.
 """
 from app.schemas.persistence import Contract
 

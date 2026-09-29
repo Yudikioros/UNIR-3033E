@@ -1,5 +1,4 @@
-"""Resumen operativo (`/`). Aislado del resto de rutas igual que capture.py,
-para poder probarse sin depender de Qdrant/Ollama en ejecución."""
+"""Expone el resumen operativo de pacientes, consultas y planes."""
 from fastapi import APIRouter, Request
 
 from app.repositories.dashboard import get_dashboard_summary

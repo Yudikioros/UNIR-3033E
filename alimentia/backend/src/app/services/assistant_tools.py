@@ -1,12 +1,4 @@
-"""
-Herramientas READ-ONLY del asistente IA contextual (sección 8).
-
-Cada herramienta valida sus parámetros, reutiliza los repositorios ya
-existentes de Fase 1-6 (nunca duplica su lógica ni ejecuta SQL propio salvo
-las agregaciones nuevas en `repositories/assistant.py`), y devuelve un DTO
-minimizado (sección 19) o levanta `ToolError` si el recurso no existe o el
-parámetro es inválido -nunca inventa un resultado-.
-"""
+"""Herramientas de consulta del asistente; no modifican datos."""
 import json
 
 from app.repositories import assistant as assistant_repo
@@ -24,8 +16,7 @@ from app.services import rag_engine
 
 
 class ToolError(Exception):
-    """Parámetro inválido o recurso inexistente: nunca se convierte en un
-    resultado inventado, se informa como tal al modelo (sección 38)."""
+    """Indica un parámetro inválido o un recurso inexistente."""
 
 
 def _require(value: str | None, field: str) -> str:
@@ -39,7 +30,8 @@ async def _plan_to_detail(db, plan_id: str) -> AssistantPlanDetail:
     try:
         plan = await get_plan_detail(db, plan_id)
     except CaptureError:
-        raise ToolError(f"No se encontró ningún plan con id '{plan_id}'.") from None
+        raise ToolError(
+            f"No se encontró ningún plan con id '{plan_id}'.") from None
     return AssistantPlanDetail(
         id=plan.id, consultationId=plan.consultationId, version=plan.version, status=plan.status,
         isEditable=plan.isEditable, createdAt=plan.createdAt,
@@ -51,13 +43,13 @@ async def _plan_to_detail(db, plan_id: str) -> AssistantPlanDetail:
         rejectedBy=plan.rejectedBy, rejectionReason=plan.rejectionReason,
         meals=[AssistantMeal(mealType=meal.mealType, name=meal.name, foods=[
             AssistantFood(foodName=food.foodName, quantity=food.quantity, unit=food.unit,
-                calories=food.calories, protein=food.protein, carbohydrates=food.carbohydrates,
-                fat=food.fat, smaeEquivalent=food.smaeEquivalent) for food in meal.foods])
-            for meal in plan.meals],
+                          calories=food.calories, protein=food.protein, carbohydrates=food.carbohydrates,
+                          fat=food.fat, smaeEquivalent=food.smaeEquivalent) for food in meal.foods])
+               for meal in plan.meals],
         validations=[AssistantValidation(code=v.code, severity=v.severity, message=v.message, isBlocking=v.isBlocking)
                      for v in plan.validations],
         sources=[AssistantSourceRef(knowledgeSourceId=s.knowledgeSourceId, documentName=s.documentName,
-                    institution=s.institution, section=s.section) for s in plan.sources],
+                                    institution=s.institution, section=s.section) for s in plan.sources],
     )
 
 
@@ -66,10 +58,11 @@ async def get_patient_tool(db, patient_id: str) -> AssistantPatientSummary:
     try:
         patient = await get_patient(db, patient_id)
     except CaptureError:
-        raise ToolError(f"No se encontró ningún paciente con id '{patient_id}'.") from None
+        raise ToolError(
+            f"No se encontró ningún paciente con id '{patient_id}'.") from None
     projected = patient_projection(patient)
     return AssistantPatientSummary(id=projected.id, name=projected.name, sex=patient.sex,
-        currentAge=projected.currentAge, defaultGoal=projected.defaultGoal, conditions=projected.conditions)
+                                   currentAge=projected.currentAge, defaultGoal=projected.defaultGoal, conditions=projected.conditions)
 
 
 async def search_patients_tool(db, query: str) -> list[AssistantPatientRef]:
@@ -83,7 +76,8 @@ async def get_patient_consultations_tool(db, patient_id: str) -> list[AssistantC
     try:
         patient = await get_patient(db, patient_id)
     except CaptureError:
-        raise ToolError(f"No se encontró ningún paciente con id '{patient_id}'.") from None
+        raise ToolError(
+            f"No se encontró ningún paciente con id '{patient_id}'.") from None
     results = []
     for consultation in patient.consultations or []:
         full = await get_consultation(db, consultation.id)
@@ -108,7 +102,8 @@ async def get_consultation_tool(db, consultation_id: str) -> AssistantConsultati
     try:
         consultation = await get_consultation(db, consultation_id)
     except CaptureError:
-        raise ToolError(f"No se encontró ninguna consulta con id '{consultation_id}'.") from None
+        raise ToolError(
+            f"No se encontró ninguna consulta con id '{consultation_id}'.") from None
     return _consultation_summary(consultation)
 
 
@@ -117,10 +112,12 @@ async def get_consultation_calculation_tool(db, consultation_id: str) -> Assista
     try:
         consultation = await get_consultation(db, consultation_id)
     except CaptureError:
-        raise ToolError(f"No se encontró ninguna consulta con id '{consultation_id}'.") from None
+        raise ToolError(
+            f"No se encontró ninguna consulta con id '{consultation_id}'.") from None
     projected = consultation_read(consultation)
     if projected.calculationMethod is None:
-        raise ToolError("Esta consulta todavía no tiene un cálculo nutricional registrado.")
+        raise ToolError(
+            "Esta consulta todavía no tiene un cálculo nutricional registrado.")
     details = {}
     if projected.calculationDetails:
         try:
@@ -145,15 +142,16 @@ async def get_patient_plans_tool(db, patient_id: str) -> list[AssistantPlanSumma
     try:
         patient = await get_patient(db, patient_id)
     except CaptureError:
-        raise ToolError(f"No se encontró ningún paciente con id '{patient_id}'.") from None
+        raise ToolError(
+            f"No se encontró ningún paciente con id '{patient_id}'.") from None
     results = []
     for consultation in patient.consultations or []:
         if not consultation.plans:
             continue
         plans = await list_consultation_plans(db, consultation.id)
         results.extend(AssistantPlanSummary(id=p.id, consultationId=p.consultationId, version=p.version,
-            status=p.status, totalCalories=p.totalCalories, createdAt=p.createdAt,
-            approvedAt=p.approvedAt, rejectedAt=p.rejectedAt) for p in plans)
+                                            status=p.status, totalCalories=p.totalCalories, createdAt=p.createdAt,
+                                            approvedAt=p.approvedAt, rejectedAt=p.rejectedAt) for p in plans)
     return results
 
 
@@ -162,10 +160,11 @@ async def get_consultation_plans_tool(db, consultation_id: str) -> list[Assistan
     try:
         plans = await list_consultation_plans(db, consultation_id)
     except CaptureError:
-        raise ToolError(f"No se encontró ninguna consulta con id '{consultation_id}'.") from None
+        raise ToolError(
+            f"No se encontró ninguna consulta con id '{consultation_id}'.") from None
     return [AssistantPlanSummary(id=p.id, consultationId=p.consultationId, version=p.version, status=p.status,
-        totalCalories=p.totalCalories, createdAt=p.createdAt, approvedAt=p.approvedAt, rejectedAt=p.rejectedAt)
-        for p in plans]
+                                 totalCalories=p.totalCalories, createdAt=p.createdAt, approvedAt=p.approvedAt, rejectedAt=p.rejectedAt)
+            for p in plans]
 
 
 async def get_plan_tool(db, plan_id: str) -> AssistantPlanDetail:
@@ -191,22 +190,26 @@ async def compare_plan_versions_tool(db, plan_id_a: str, plan_id_b: str) -> Plan
 
     foods_a = {food.foodName for meal in a.meals for food in meal.foods}
     foods_b = {food.foodName for meal in b.meals for food in meal.foods}
-    quantities_a = {food.foodName: food.quantity for meal in a.meals for food in meal.foods}
-    quantities_b = {food.foodName: food.quantity for meal in b.meals for food in meal.foods}
+    quantities_a = {
+        food.foodName: food.quantity for meal in a.meals for food in meal.foods}
+    quantities_b = {
+        food.foodName: food.quantity for meal in b.meals for food in meal.foods}
     quantity_changes = [
-        {"foodName": name, "before": quantities_a[name], "after": quantities_b[name]}
+        {"foodName": name,
+            "before": quantities_a[name], "after": quantities_b[name]}
         for name in (foods_a & foods_b) if quantities_a[name] != quantities_b[name]
     ]
 
     def _summary(detail: AssistantPlanDetail) -> AssistantPlanSummary:
         return AssistantPlanSummary(id=detail.id, consultationId=detail.consultationId, version=detail.version,
-            status=detail.status, totalCalories=detail.totalCalories, createdAt=detail.createdAt,
-            approvedAt=detail.approvedAt, rejectedAt=detail.rejectedAt)
+                                    status=detail.status, totalCalories=detail.totalCalories, createdAt=detail.createdAt,
+                                    approvedAt=detail.approvedAt, rejectedAt=detail.rejectedAt)
 
     return PlanVersionComparison(
         planA=_summary(a), planB=_summary(b),
         statusChanged=a.status != b.status,
-        totalCaloriesDelta=(b.totalCalories - a.totalCalories) if (a.totalCalories is not None and b.totalCalories is not None) else None,
+        totalCaloriesDelta=(b.totalCalories - a.totalCalories) if (
+            a.totalCalories is not None and b.totalCalories is not None) else None,
         mealCountA=len(a.meals), mealCountB=len(b.meals),
         foodsAdded=sorted(foods_b - foods_a), foodsRemoved=sorted(foods_a - foods_b),
         quantityChanges=quantity_changes,
@@ -218,13 +221,13 @@ async def search_knowledge_tool(db, query: str) -> list[AssistantKnowledgeChunk]
     query = _require(query, "query")
     chunks = rag_engine.knowledge_base_service.search(query, top_k=3)
     return [AssistantKnowledgeChunk(sourceId=chunk.sourceId, documentName=chunk.documentName,
-        institution=chunk.institution, version=chunk.version, content=chunk.content[:800]) for chunk in chunks]
+                                    institution=chunk.institution, version=chunk.version, content=chunk.content[:800]) for chunk in chunks]
 
 
 async def list_knowledge_sources_tool(db) -> list[AssistantKnowledgeSourceRef]:
     sources = await list_sources(db)
     return [AssistantKnowledgeSourceRef(id=s.id, documentName=s.documentName, institution=s.institution,
-        version=s.version, sourceType=s.sourceType, isActive=s.isActive) for s in sources]
+                                        version=s.version, sourceType=s.sourceType, isActive=s.isActive) for s in sources]
 
 
 async def count_plans_by_status_tool(db) -> list[PlanStatusCount]:

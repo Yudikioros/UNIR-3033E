@@ -1,11 +1,8 @@
 """
-Trazabilidad completa de un plan (Fase 6, Parte B).
+Reconstruye el origen y las revisiones de un plan desde los datos persistidos.
 
-Reconstruye cómo se produjo un DietPlan sin consultar manualmente múltiples
-tablas: consulta -> cálculo -> ruleset -> base alimentaria -> conocimiento
-recuperado -> generación IA -> validaciones -> intervención humana ->
-aprobación/rechazo. Nunca expone prompts completos, secrets, API keys, rutas
-internas, el UUID del paciente, ni PII no pertinente.
+No expone prompts, secretos, rutas internas ni datos personales ajenos a la
+trazabilidad.
 """
 from app.repositories.capture import CaptureError
 from app.schemas.traceability import (
@@ -27,18 +24,18 @@ async def get_plan_traceability(db, plan_id: str) -> PlanTraceabilityRead:
     if plan is None:
         raise CaptureError(404, "No se encontró el plan.")
 
-    origin_link = next((link for link in plan.generationLinks or [] if link.isOrigin), None)
+    origin_link = next(
+        (link for link in plan.generationLinks or [] if link.isOrigin), None)
     generation = origin_link.generation if origin_link else None
 
     calculation_row = None
     calculations = await db.consultationcalculation.find_many(
         where={"consultationId": plan.consultationId}, include={"metrics": True})
     if calculations:
-        calculation_row = sorted(calculations, key=lambda r: (r.recordedAt, r.id), reverse=True)[0]
+        calculation_row = sorted(calculations, key=lambda r: (
+            r.recordedAt, r.id), reverse=True)[0]
 
-    # Un guardado de edición puede generar varias filas (una por campo cambiado, ver
-    # `plan_management.edit_plan`); todas comparten `changedAt`, así que se cuentan
-    # timestamps distintos ("guardados"), no filas ("campos cambiados").
+    # Agrupa los campos modificados en cada guardado mediante `changedAt`.
     edit_rows = await db.dietplanchangelog.find_many(
         where={"dietPlanId": plan_id, "changeType": "MANUAL_EDIT"})
     edit_count = len({row.changedAt for row in edit_rows})
@@ -47,7 +44,7 @@ async def get_plan_traceability(db, plan_id: str) -> PlanTraceabilityRead:
 
     sources = [
         TraceabilitySource(sourceId=retrieved.knowledgeSource.id, name=retrieved.knowledgeSource.documentName,
-            version=retrieved.knowledgeSource.version, document=retrieved.knowledgeSource.originalFilename)
+                           version=retrieved.knowledgeSource.version, document=retrieved.knowledgeSource.originalFilename)
         for retrieved in (generation.retrievedSources if generation else []) or []
     ]
 
@@ -55,7 +52,8 @@ async def get_plan_traceability(db, plan_id: str) -> PlanTraceabilityRead:
     knowledge_used = generation.knowledgeBaseUsed if generation else None
 
     return PlanTraceabilityRead(
-        plan=TraceabilityPlan(id=plan.id, version=plan.version, status=plan.status),
+        plan=TraceabilityPlan(
+            id=plan.id, version=plan.version, status=plan.status),
         calculation=TraceabilityCalculation(
             calculationId=calculation_row.id if calculation_row else None,
             method=calculation_row.calculationMethod if calculation_row else None,

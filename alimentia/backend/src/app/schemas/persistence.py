@@ -1,4 +1,4 @@
-"""Phase 1 contracts. Unknown legacy observations are allowed only in Read DTOs."""
+"""Contratos compartidos; los valores legacy desconocidos solo se leen."""
 from datetime import datetime, timezone
 from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -39,7 +39,8 @@ class Severity(StrEnum):
 
 
 class Contract(BaseModel):
-    model_config = ConfigDict(from_attributes=True, extra="forbid", allow_inf_nan=False, str_strip_whitespace=True)
+    model_config = ConfigDict(from_attributes=True, extra="forbid",
+                              allow_inf_nan=False, str_strip_whitespace=True)
 
 
 class PatientCreate(Contract):
@@ -112,6 +113,12 @@ class NutritionConsultationRead(Contract):
     heightM: float | None = None
     activityLevel: str | None = None
     goal: str | None = None
+    targetCaloriesOverride: float | None = None
+    proteinGramsOverride: float | None = None
+    carbohydrateGramsOverride: float | None = None
+    fatGramsOverride: float | None = None
+    fiberGramsOverride: float | None = None
+    waterLitersOverride: float | None = None
     mealsPerDay: int | None = None
     dailyBudget: float | None = None
     budgetMin: float | None = None
@@ -145,6 +152,12 @@ class NutritionConsultationCreate(Contract):
     heightM: float = Field(gt=0, le=3)
     activityLevel: ActivityLevel
     goal: NutritionGoal
+    targetCaloriesOverride: float | None = Field(default=None, gt=0)
+    proteinGramsOverride: float | None = Field(default=None, ge=0)
+    carbohydrateGramsOverride: float | None = Field(default=None, ge=0)
+    fatGramsOverride: float | None = Field(default=None, ge=0)
+    fiberGramsOverride: float | None = Field(default=None, ge=0)
+    waterLitersOverride: float | None = Field(default=None, ge=0)
     mealsPerDay: int = Field(ge=1, le=12)
     dailyBudget: float | None = Field(default=None, ge=0)
     budgetMin: float | None = Field(default=None, ge=0)

@@ -1,26 +1,17 @@
-# src/app/services/calculator.py
 """
-Motor de cálculo nutricional determinístico (Fase 3).
+Calcula los requerimientos nutricionales de forma determinística.
 
-Este módulo es la única fuente de verdad para BMR/TDEE/objetivo/macros/fibra/agua.
-El LLM nunca participa en estos cálculos: la misma entrada siempre produce la
-misma salida.
-
-Las funciones `calculate_bmr`, `calculate_tdee` y `get_nutritional_baseline` al
-final del archivo son la ruta heredada (pre-Fase 1) usada por
-`POST /api/v1/generate-draft`; se conservan sin cambios para no romper ese flujo.
+El LLM no participa en estos cálculos. Las funciones heredadas se mantienen
+para conservar compatibilidad con el endpoint antiguo.
 """
 from datetime import datetime, timezone
 
 from app.schemas.persistence import ActivityLevel, NutritionGoal, Sex
 
-# --- Constantes centralizadas y versionadas del MVP (Fase 3) ---------------
-
 CALCULATION_METHOD = "MIFFLIN_ST_JEOR"
 RULE_VERSION = "1.0"
 
-# Factores de actividad del MVP (sección 8). Mapeados sobre el enum existente
-# ActivityLevel para no duplicar catálogos: ACTIVE ~ "alta", VERY_ACTIVE ~ "muy alta".
+# Factores de actividad asociados a los niveles del contrato.
 ACTIVITY_FACTORS = {
     ActivityLevel.SEDENTARY: 1.20,
     ActivityLevel.LIGHT: 1.375,
@@ -29,21 +20,22 @@ ACTIVITY_FACTORS = {
     ActivityLevel.VERY_ACTIVE: 1.90,
 }
 
-# Ajuste de energía objetivo por meta (sección 10). Regla del MVP, no clínica.
+# Ajustes configurados para los objetivos del MVP; no son recomendaciones clínicas.
 GOAL_ADJUSTMENTS_KCAL = {
     NutritionGoal.LOSS: -500.0,
     NutritionGoal.MAINTENANCE: 0.0,
     NutritionGoal.GAIN: 300.0,
 }
 
-# Distribución de macronutrientes por defecto del MVP (sección 12).
-MACRO_DISTRIBUTION_PERCENTAGE = {"protein": 25.0, "carbohydrate": 45.0, "fat": 30.0}
+# Distribución fija de macronutrientes del MVP.
+MACRO_DISTRIBUTION_PERCENTAGE = {
+    "protein": 25.0, "carbohydrate": 45.0, "fat": 30.0}
 KCAL_PER_GRAM = {"protein": 4.0, "carbohydrate": 4.0, "fat": 9.0}
 
 FIBER_G_PER_1000_KCAL = 14.0
 WATER_ML_PER_KG = 35.0
 
-# Rangos técnicos de captura (sección 5). No son límites clínicos.
+# Rangos técnicos de captura; no son límites clínicos.
 AGE_RANGE_YEARS = (18, 100)
 WEIGHT_RANGE_KG = (20.0, 350.0)
 HEIGHT_RANGE_M = (1.20, 2.30)
@@ -59,7 +51,7 @@ def _in_range(value, bounds):
 
 
 def validate_calculation_inputs(*, sex, age_at_consultation, weight_kg, height_m, activity_level, goal):
-    """Validaciones técnicas de captura, no reglas clínicas (sección 5)."""
+    """Valida los rangos técnicos de entrada, no criterios clínicos."""
     if sex not in set(Sex):
         raise NutritionCalculationError("Sexo no reconocido.")
     if activity_level not in set(ActivityLevel):
@@ -68,17 +60,20 @@ def validate_calculation_inputs(*, sex, age_at_consultation, weight_kg, height_m
         raise NutritionCalculationError("Objetivo no reconocido.")
     age_min, age_max = AGE_RANGE_YEARS
     if not _in_range(age_at_consultation, AGE_RANGE_YEARS):
-        raise NutritionCalculationError(f"Edad fuera del rango técnico admitido ({age_min}-{age_max} años).")
+        raise NutritionCalculationError(
+            f"Edad fuera del rango técnico admitido ({age_min}-{age_max} años).")
     weight_min, weight_max = WEIGHT_RANGE_KG
     if not _in_range(weight_kg, WEIGHT_RANGE_KG):
-        raise NutritionCalculationError(f"Peso fuera del rango técnico admitido ({weight_min}-{weight_max} kg).")
+        raise NutritionCalculationError(
+            f"Peso fuera del rango técnico admitido ({weight_min}-{weight_max} kg).")
     height_min, height_max = HEIGHT_RANGE_M
     if not _in_range(height_m, HEIGHT_RANGE_M):
-        raise NutritionCalculationError(f"Talla fuera del rango técnico admitido ({height_min}-{height_max} m).")
+        raise NutritionCalculationError(
+            f"Talla fuera del rango técnico admitido ({height_min}-{height_max} m).")
 
 
 def calculate_bmi(weight_kg: float, height_m: float) -> float:
-    """IMC = peso_kg / talla_m². Solo se calcula y registra; no se usa para decidir en esta fase."""
+    """Calcula el IMC como dato descriptivo; no se usa para tomar decisiones."""
     return weight_kg / (height_m ** 2)
 
 
@@ -94,17 +89,23 @@ def calculate_total_energy_expenditure(bmr: float, activity_level: str) -> float
     return bmr * ACTIVITY_FACTORS[ActivityLevel(activity_level)]
 
 
-def calculate_target_calories(tdee: float, goal: str) -> tuple[float, float]:
+def calculate_target_calories(tdee: float, goal: str, target_override: float | None = None) -> tuple[float, float]:
     """Energía objetivo = TDEE + ajuste por meta. Rechaza resultados <= 0 (sección 11)."""
+    if target_override is not None:
+        if target_override <= 0:
+            raise NutritionCalculationError(
+                "La energía objetivo personalizada debe ser mayor que cero.")
+        return target_override, target_override - tdee
     adjustment = GOAL_ADJUSTMENTS_KCAL[NutritionGoal(goal)]
     target = tdee + adjustment
     if target <= 0:
-        raise NutritionCalculationError("El ajuste por objetivo produce una energía objetivo no válida (<= 0 kcal).")
+        raise NutritionCalculationError(
+            "El ajuste por objetivo produce una energía objetivo no válida (<= 0 kcal).")
     return target, adjustment
 
 
 def calculate_macronutrients(target_calories: float) -> dict:
-    """Distribución porcentual fija del MVP, convertida a gramos (sección 12)."""
+    """Convierte la distribución fija del MVP a gramos."""
     result = {}
     for name, percentage in MACRO_DISTRIBUTION_PERCENTAGE.items():
         calories = target_calories * (percentage / 100.0)
@@ -137,29 +138,42 @@ class NutritionCalculationService:
     method = CALCULATION_METHOD
     rule_version = RULE_VERSION
 
-    def calculate(self, *, sex, age_at_consultation, weight_kg, height_m, activity_level, goal) -> dict:
+    def calculate(self, *, sex, age_at_consultation, weight_kg, height_m, activity_level, goal,
+                  target_calories_override=None, protein_grams_override=None,
+                  carbohydrate_grams_override=None, fat_grams_override=None,
+                  fiber_grams_override=None, water_liters_override=None) -> dict:
         validate_calculation_inputs(sex=sex, age_at_consultation=age_at_consultation, weight_kg=weight_kg,
-            height_m=height_m, activity_level=activity_level, goal=goal)
+                                    height_m=height_m, activity_level=activity_level, goal=goal)
 
         bmi = calculate_bmi(weight_kg, height_m)
-        bmr = calculate_mifflin_st_jeor_bmr(weight_kg, height_m, age_at_consultation, sex)
+        bmr = calculate_mifflin_st_jeor_bmr(
+            weight_kg, height_m, age_at_consultation, sex)
         activity_factor = ACTIVITY_FACTORS[ActivityLevel(activity_level)]
         tdee = calculate_total_energy_expenditure(bmr, activity_level)
-        target_calories, goal_adjustment = calculate_target_calories(tdee, goal)
+        target_calories, goal_adjustment = calculate_target_calories(
+            tdee, goal, target_calories_override)
         macros = calculate_macronutrients(target_calories)
-        fiber_g = calculate_fiber_grams(target_calories)
-        water_ml = calculate_water_ml(weight_kg)
+        protein_g = protein_grams_override if protein_grams_override is not None else macros[
+            "protein"]["grams"]
+        carbohydrate_g = carbohydrate_grams_override if carbohydrate_grams_override is not None else macros[
+            "carbohydrate"]["grams"]
+        fat_g = fat_grams_override if fat_grams_override is not None else macros[
+            "fat"]["grams"]
+        fiber_g = fiber_grams_override if fiber_grams_override is not None else calculate_fiber_grams(
+            target_calories)
+        water_l = water_liters_override if water_liters_override is not None else calculate_water_ml(
+            weight_kg) / 1000.0
 
         metrics = {
             "bmi": round(bmi, 1),
             "basalMetabolicRate": round(bmr, 2),
             "totalEnergyExpenditure": round(tdee, 2),
             "targetCalories": round(target_calories, 2),
-            "proteinGrams": round(macros["protein"]["grams"], 1),
-            "carbohydrateGrams": round(macros["carbohydrate"]["grams"], 1),
-            "fatGrams": round(macros["fat"]["grams"], 1),
+            "proteinGrams": round(protein_g, 1),
+            "carbohydrateGrams": round(carbohydrate_g, 1),
+            "fatGrams": round(fat_g, 1),
             "fiberGrams": round(fiber_g, 1),
-            "waterLiters": round(water_ml / 1000.0, 2),
+            "waterLiters": round(water_l, 2),
         }
 
         details = {
@@ -170,10 +184,18 @@ class NutritionCalculationService:
             "activityFactor": activity_factor,
             "goal": str(goal),
             "goalAdjustmentKcal": goal_adjustment,
+            "customOverrides": {
+                "targetCalories": target_calories_override,
+                "proteinGrams": protein_grams_override,
+                "carbohydrateGrams": carbohydrate_grams_override,
+                "fatGrams": fat_grams_override,
+                "fiberGrams": fiber_grams_override,
+                "waterLiters": water_liters_override,
+            },
             "macroDistributionPercentage": {name: m["percentage"] for name, m in macros.items()},
             "fiberRule": f"{FIBER_G_PER_1000_KCAL:g} g / 1000 kcal",
             "waterRule": f"{WATER_ML_PER_KG:g} ml/kg",
-            "waterMl": round(water_ml, 1),
+            "waterMl": round(water_l * 1000.0, 1),
         }
 
         return {
@@ -188,9 +210,7 @@ class NutritionCalculationService:
 nutrition_calculation_service = NutritionCalculationService()
 
 
-# --- Ruta heredada (pre-Fase 1), usada por POST /api/v1/generate-draft -----
-# No se toca: recibe texto libre ("Female"/"Sedentary", etc.), no los enums
-# de NutritionConsultation. Se conserva intacta para no romper ese flujo.
+# Compatibilidad con el endpoint legacy, que recibe texto libre en vez de enums.
 
 def calculate_bmr(weight_kg: float, height_m: float, age_yrs: int, gender: str) -> float:
     """
@@ -211,6 +231,7 @@ def calculate_bmr(weight_kg: float, height_m: float, age_yrs: int, gender: str) 
     else:
         raise ValueError("Gender must be 'male' or 'female'")
 
+
 def calculate_tdee(bmr: float, activity_level: str) -> float:
     """
     Calculates Total Daily Energy Expenditure (TDEE) based on activity multipliers.
@@ -230,6 +251,7 @@ def calculate_tdee(bmr: float, activity_level: str) -> float:
         return bmr * 1.2
 
     return bmr * multipliers[activity_normalized]
+
 
 def get_nutritional_baseline(weight: float, height: float, age: int, gender: str, activity_level: str) -> dict:
     """

@@ -1,23 +1,8 @@
 """
-Motor de validaciones deterministas del plan (Fase 4/5): PlanValidationService.
+Valida planes de forma determinística durante la generación y la revisión.
 
-Única fuente de verdad de severidad/bloqueo del plan dietético, usada tanto
-en la generación con LLM (Fase 4) como en la revalidación automática tras
-una edición manual (Fase 5). Nunca usa el LLM para decidir si el plan
-cumple: todo aquí es aritmética y comparación de cadenas sobre datos ya
-persistidos o a punto de persistirse.
-
-Los códigos y su bloqueo (sección 11 de Fase 5):
-
-    RESTRICTED_FOOD_FOUND     ERROR    bloqueante
-    MEAL_COUNT_MISMATCH       ERROR    bloqueante
-    INCOMPLETE_NUTRITION_DATA ERROR    bloqueante
-    INVALID_QUANTITY          ERROR    bloqueante
-    INCOMPLETE_STRUCTURE      ERROR    bloqueante
-    ENERGY_OUT_OF_TOLERANCE   ERROR    bloqueante
-    ENERGY_WITHIN_TOLERANCE   INFO     no bloqueante
-    FOOD_DATABASE_UNAVAILABLE    WARNING  no bloqueante (se agrega en services.diet_plan_generation)
-    KNOWLEDGE_BASE_UNAVAILABLE   WARNING  no bloqueante (se agrega en services.diet_plan_generation)
+Centraliza la severidad y el carácter bloqueante de cada validación. No usa
+el modelo para decidir si un plan cumple.
 """
 from typing import Optional
 

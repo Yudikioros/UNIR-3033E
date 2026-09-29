@@ -1,25 +1,8 @@
 """
-Ciclo de vida human-in-the-loop del plan (Fase 5): consulta, edición manual,
-aprobación, rechazo y regeneración.
+Gestiona edición, aprobación, rechazo y regeneración de planes.
 
-Principio: EL PLAN NUNCA SE CONSIDERA FINAL HASTA QUE UN PROFESIONAL LO
-APRUEBA EXPLÍCITAMENTE. Reutiliza `DietPlanChangeLog` (Fase 1) como única
-auditoría — no crea un sistema paralelo. Reutiliza `PlanStatus` (DRAFT,
-UNDER_REVIEW, MODIFIED, REGENERATED, REJECTED, APPROVED) ya definido y con
-CHECK en la base de datos — no duplica el enum.
-
-Transiciones permitidas:
-
-    DRAFT | UNDER_REVIEW  --edit-->        UNDER_REVIEW (mismo DietPlan)
-    DRAFT | UNDER_REVIEW  --approve-->     APPROVED (si no hay validaciones bloqueantes)
-    DRAFT | UNDER_REVIEW  --reject-->      REJECTED
-    DRAFT | UNDER_REVIEW | REJECTED --regenerate--> nueva versión DRAFT (plan actual intacto)
-    APPROVED                               inmutable: edit/approve/reject/regenerate -> 409
-    REJECTED                               no editable directamente (no vuelve a DRAFT solo); sí regenerable
-
-`parentPlanId` no existe en el schema y no se agrega por comodidad (sección
-20 de Fase 5): la relación entre versiones se infiere por
-`consultationId` + `version` (siempre consecutivo, nunca reutilizado).
+La aprobación requiere validaciones no bloqueantes y vuelve inmutable el plan.
+La regeneración crea una versión nueva sin modificar la anterior.
 """
 import os
 from datetime import datetime, timezone
@@ -27,7 +10,7 @@ from datetime import datetime, timezone
 from app.repositories.capture import CaptureError, get_consultation
 from app.repositories.normalized import consultation_read, dietary_values, plan_read
 from app.schemas.generation import PlanValidationRead, RetrievedSourceRead
-from app.schemas.plan_management import DietPlanDetail
+from app.schemas.plan_management import DietPlanDetail, DietPlanIndexItem
 from app.services import diet_plan_generation, plan_validation
 
 EDITABLE_STATUSES = {"DRAFT", "UNDER_REVIEW"}
@@ -35,9 +18,7 @@ APPROVABLE_STATUSES = {"DRAFT", "UNDER_REVIEW"}
 REJECTABLE_STATUSES = {"DRAFT", "UNDER_REVIEW"}
 REGENERATABLE_STATUSES = {"DRAFT", "UNDER_REVIEW", "REJECTED"}
 
-# Identidad profesional mínima (sección 7): nunca "Nutriólogo" genérico a secas;
-# un identificador explícito de actor de sistema para este despliegue de demo/dev,
-# hasta que exista autenticación real.
+# Identificador temporal del actor mientras no exista autenticación.
 DEFAULT_ACTOR = os.getenv("ALIMENTIA_DEFAULT_ACTOR", "profesional-demo")
 
 PLAN_INCLUDE = {
@@ -45,6 +26,16 @@ PLAN_INCLUDE = {
     "nutrientObservations": True,
     "generationLinks": {"include": {"generation": True}},
     "validations": True,
+}
+PLAN_INDEX_INCLUDE = {
+    "consultation": {
+        "include": {
+            "patient": True,
+            "calculations": {"include": {"metrics": True}},
+        },
+    },
+    "nutrientObservations": True,
+    "generationLinks": {"include": {"generation": True}},
 }
 
 
@@ -115,6 +106,34 @@ async def get_plan_detail(db, plan_id: str) -> DietPlanDetail:
     return await _plan_detail(db, plan)
 
 
+async def list_plan_index(db) -> list[DietPlanIndexItem]:
+    rows = await db.dietplan.find_many(
+        include=PLAN_INDEX_INCLUDE, order={"createdAt": "desc"})
+    result = []
+    for plan in rows:
+        origin = next(
+            (link for link in plan.generationLinks or [] if link.isOrigin), None)
+        total_calories = next(
+            (metric.value for metric in plan.nutrientObservations or []
+             if metric.metricCode == "totalCalories"), None)
+        calculations = plan.consultation.calculations or []
+        latest_calculation = max(
+            calculations, key=lambda calculation: (calculation.recordedAt, calculation.id), default=None)
+        target_calories = None
+        if latest_calculation:
+            target_calories = next(
+                (metric.value for metric in latest_calculation.metrics or []
+                 if metric.metricCode == "targetCalories"), None)
+        result.append(DietPlanIndexItem(
+            id=plan.id, consultationId=plan.consultationId,
+            patientName=plan.consultation.patient.name,
+            version=plan.version, status=plan.status,
+            totalCalories=total_calories, targetCalories=target_calories,
+            generatedAt=origin.generation.createdAt if origin and origin.generation else plan.createdAt,
+        ))
+    return result
+
+
 async def list_consultation_plans(db, consultation_id: str) -> list:
     # 404 si la consulta no existe
     consultation = await get_consultation(db, consultation_id)
@@ -164,8 +183,7 @@ def _diff_foods(meal_index: int, previous: list, new: list) -> list:
 
 
 def _diff_meals(previous: list, new: list) -> list:
-    """Diferencia posicional simple: suficiente para registrar qué cambió (sección 6),
-    no pretende detectar reordenamientos semánticos como "el mismo platillo se movió"."""
+    """Registra cambios por posición; no detecta reordenamientos semánticos."""
     entries = []
     for i in range(max(len(previous), len(new))):
         old_meal = previous[i] if i < len(previous) else None
@@ -189,8 +207,7 @@ def _diff_meals(previous: list, new: list) -> list:
 
 
 async def _revalidate(tx, plan_id: str, meals: list, *, meals_per_day, target_calories, restricted_terms) -> list:
-    """PlanValidationService (sección 9): recalcula totales y validaciones desde
-    los alimentos persistidos, siempre en base al objetivo real de la consulta."""
+    """Recalcula totales y validaciones con el objetivo de la consulta."""
     await tx.planvalidation.delete_many(where={"dietPlanId": plan_id})
     validations = plan_validation.validate_meals(meals, meals_per_day=meals_per_day,
                                                  target_calories=target_calories, restricted_terms=restricted_terms)
@@ -228,10 +245,7 @@ async def edit_plan(db, plan_id: str, dto) -> DietPlanDetail:
                       "foods": [food.model_dump() for food in meal.foods]}
                      for index, meal in enumerate(dto.meals)]
 
-        # Un mismo guardado puede generar varias entradas de auditoría (una por campo
-        # cambiado, para el detalle del historial); todas comparten `changedAt` para que
-        # la trazabilidad y las métricas de Fase 6 puedan contar "ediciones" (guardados)
-        # en vez de "campos cambiados", agrupando por este timestamp compartido.
+        # Comparte timestamp para agrupar todos los campos de este guardado.
         edited_at = now()
         for entry in _diff_meals(previous_meals, new_meals):
             await tx.dietplanchangelog.create(data={"dietPlanId": plan_id, "changedBy": actor,
@@ -274,10 +288,7 @@ async def approve_plan(db, plan_id: str, dto) -> DietPlanDetail:
     meals = [_meal_snapshot(m) for m in sorted(
         plan.meals or [], key=lambda m: m.sortOrder)]
 
-    # Sección 12: "el plan fue validado después de la última modificación" se garantiza
-    # revalidando siempre, en su propia transacción, que SIEMPRE se confirma — a diferencia
-    # de la aprobación en sí, que puede rechazarse después. Si ambos pasos compartieran una
-    # sola transacción, un 409 más abajo revertiría también esta revalidación recién hecha.
+    # Confirma la revalidación antes de decidir la aprobación, que puede rechazarse.
     async with db.tx() as tx:
         validations = await _revalidate(tx, plan_id, meals, meals_per_day=consultation.mealsPerDay,
                                         target_calories=targets.targetCalories, restricted_terms=restricted_terms)

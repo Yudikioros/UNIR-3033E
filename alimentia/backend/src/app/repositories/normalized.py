@@ -1,4 +1,4 @@
-"""Persistence projections: API convenience fields are assembled, never duplicated in tables."""
+"""Proyecciones que reúnen relaciones normalizadas en contratos de API."""
 import json
 from datetime import datetime, timezone
 
@@ -7,7 +7,7 @@ DIETARY_FIELDS = {
     'allergiesOrIntolerances': 'ALLERGY_OR_INTOLERANCE',
 }
 CALCULATION_FIELDS = ('bmi', 'basalMetabolicRate', 'totalEnergyExpenditure',
-    'targetCalories', 'proteinGrams', 'carbohydrateGrams', 'fatGrams', 'fiberGrams', 'waterLiters')
+                      'targetCalories', 'proteinGrams', 'carbohydrateGrams', 'fatGrams', 'fiberGrams', 'waterLiters')
 
 
 def dietary_values(raw):
@@ -27,7 +27,8 @@ def dietary_values(raw):
 def dietary_create(data):
     items = []
     for field, kind in DIETARY_FIELDS.items():
-        items.extend({'kind': kind, 'content': value} for value in dietary_values(data.pop(field, None)))
+        items.extend({'kind': kind, 'content': value}
+                     for value in dietary_values(data.pop(field, None)))
     if items:
         data['dietaryItems'] = {'create': items}
     return data
@@ -54,36 +55,44 @@ def dietary_projection(items):
 
 
 def patient_read(patient):
-    """Call with dietaryItems included; birthDate and age are mutually exclusive."""
+    """Proyecta un paciente con sus datos dietéticos incluidos."""
     from app.schemas.persistence import PatientRead
-    data = {k: v for k, v in patient.model_dump().items() if k in PatientRead.model_fields}
+    data = {k: v for k, v in patient.model_dump(
+    ).items() if k in PatientRead.model_fields}
     data.update(dietary_projection(patient.dietaryItems))
     return PatientRead.model_validate(data)
 
 
 def consultation_read(consultation):
-    """Call with dietaryItems and calculations.metrics included."""
+    """Proyecta una consulta con datos dietéticos y cálculos incluidos."""
     from app.schemas.persistence import NutritionConsultationRead
     fields = NutritionConsultationRead.model_fields
     data = {k: v for k, v in consultation.model_dump().items() if k in fields}
     data.update(dietary_projection(consultation.dietaryItems))
-    runs = sorted(consultation.calculations or [], key=lambda r: (r.recordedAt, r.id), reverse=True)
+    runs = sorted(consultation.calculations or [],
+                  key=lambda r: (r.recordedAt, r.id), reverse=True)
     if runs:
         latest = runs[0]
-        data.update({k: getattr(latest, k) for k in ('calculationMethod','calculationRuleVersion','calculationDetails')})
-        data.update({m.metricCode: m.value for m in latest.metrics or [] if m.metricCode in CALCULATION_FIELDS})
+        data.update({k: getattr(latest, k) for k in (
+            'calculationMethod', 'calculationRuleVersion', 'calculationDetails')})
+        data.update({m.metricCode: m.value for m in latest.metrics or [
+        ] if m.metricCode in CALCULATION_FIELDS})
     return NutritionConsultationRead.model_validate(data)
 
 
 def plan_read(plan):
-    """Call with meals.foods, nutrientObservations and generationLinks included."""
+    """Proyecta un plan con comidas, nutrientes y generación incluidos."""
     from app.schemas.persistence import DietPlanRead
-    data = {k: v for k, v in plan.model_dump().items() if k in DietPlanRead.model_fields}
+    data = {k: v for k, v in plan.model_dump(
+    ).items() if k in DietPlanRead.model_fields}
     data['meals'] = plan.meals or []
-    data.update({m.metricCode: m.value for m in plan.nutrientObservations or [] if m.metricCode in DietPlanRead.model_fields})
-    data['generationId'] = next((l.generationId for l in plan.generationLinks or [] if l.isOrigin), None)
+    data.update({m.metricCode: m.value for m in plan.nutrientObservations or [
+    ] if m.metricCode in DietPlanRead.model_fields})
+    data['generationId'] = next(
+        (l.generationId for l in plan.generationLinks or [] if l.isOrigin), None)
     try:
-        data['recommendations'] = json.loads(plan.recommendations) if plan.recommendations else []
+        data['recommendations'] = json.loads(
+            plan.recommendations) if plan.recommendations else []
     except (ValueError, TypeError):
         data['recommendations'] = []
     return DietPlanRead.model_validate(data)

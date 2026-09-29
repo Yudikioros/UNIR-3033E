@@ -1,7 +1,6 @@
-"""Contratos del ciclo de vida human-in-the-loop del plan (Fase 5).
+"""Contratos para la revisión profesional y gestión de planes.
 
-Reutiliza `DietPlanFoodCreate` (Fase 1) para la edición manual: ya exige
-cantidad positiva y unidad no vacía, igual que el contrato de generación.
+La edición reutiliza el contrato de alimento y sus validaciones.
 """
 from datetime import datetime
 
@@ -43,7 +42,7 @@ class RegenerateRequest(Contract):
 
 
 class DietPlanDetail(DietPlanRead):
-    """Sección 3 de Fase 5: plan + objetivos de la consulta + validaciones + fuentes + generación."""
+    """Detalle del plan con objetivos, validaciones, fuentes y generación."""
     targetCalories: float | None = None
     targetProteinGrams: float | None = None
     targetCarbohydrateGrams: float | None = None
@@ -59,3 +58,14 @@ class DietPlanDetail(DietPlanRead):
     modelName: str | None = None
     promptVersion: str | None = None
     knowledgeBaseVersion: str | None = None
+
+
+class DietPlanIndexItem(Contract):
+    id: str
+    consultationId: str
+    patientName: str
+    version: int
+    status: str
+    totalCalories: float | None = None
+    targetCalories: float | None = None
+    generatedAt: datetime

@@ -1,11 +1,7 @@
 """
-Contratos del asistente IA contextual de AlimentIA.
+Contratos mínimos para las consultas del asistente.
 
-Principio (sección 3 del pedido): el asistente NO es la fuente de verdad. Los
-DTOs de esta capa son deliberadamente minimizados (sección 19): nunca
-exponen email/teléfono/domicilio/notas libres al LLM, solo lo necesario para
-responder preguntas clínicas/administrativas sobre pacientes, consultas,
-cálculos, planes y fuentes documentales.
+No incluyen datos de contacto ni notas libres del paciente.
 """
 from datetime import datetime
 from enum import StrEnum
@@ -203,9 +199,11 @@ class PatientPlanStatusRef(Contract):
 class AssistantDecision(Contract):
     """Salida estructurada de cada paso del agente (nunca SQL, nunca texto libre
     para invocar herramientas: ver sección 9)."""
-    action: str = Field(description="'use_tool', 'answer' o 'ask_clarification'")
+    action: str = Field(
+        description="'use_tool', 'answer' o 'ask_clarification'")
     tool: ToolName | None = None
-    arguments: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    arguments: dict[str, str | int | float |
+                    bool | None] = Field(default_factory=dict)
     answer: str | None = None
 
 
@@ -225,7 +223,8 @@ class AssistantConversationTurn(Contract):
 
 class AssistantChatRequest(Contract):
     message: str = Field(min_length=1, max_length=1000)
-    context: AssistantNavigationContext = Field(default_factory=AssistantNavigationContext)
+    context: AssistantNavigationContext = Field(
+        default_factory=AssistantNavigationContext)
     conversation: list[AssistantConversationTurn] = Field(default_factory=list)
 
 
@@ -245,7 +244,8 @@ class AssistantResponseMetadata(Contract):
     routingTimeMs: int = 0
     toolExecutionTimeMs: int = 0
     llmExecutionTimeMs: int = 0
-    responseMode: str = Field(default="deterministic", description="'deterministic' o 'llm'")
+    responseMode: str = Field(default="deterministic",
+                              description="'deterministic' o 'llm'")
 
 
 class AssistantExplanation(Contract):

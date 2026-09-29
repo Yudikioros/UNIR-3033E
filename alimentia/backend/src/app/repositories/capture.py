@@ -1,4 +1,4 @@
-"""Patient and consultation capture; all writes use the normalized relations."""
+"""Gestiona pacientes y consultas mediante relaciones normalizadas."""
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -9,9 +9,9 @@ from app.schemas.capture import PatientDetail, ConsultationCapture, Consultation
 from app.services.calculator import nutrition_calculation_service, NutritionCalculationError
 
 PATIENT_INCLUDE = {'dietaryItems': True, 'conditions': True,
-    'consultations': {'include': {'plans': True}}}
+                   'consultations': {'include': {'plans': True}}}
 CONSULTATION_INCLUDE = {'dietaryItems': True, 'plans': True, 'generations': True,
-    'patient': {'include': {'conditions': True}}, 'calculations': {'include': {'metrics': True}}}
+                        'patient': {'include': {'conditions': True}}, 'calculations': {'include': {'metrics': True}}}
 SCOPE_WARNING = 'Este caso puede encontrarse fuera del alcance del MVP y requiere revisión profesional antes de continuar.'
 GOAL_ALIASES = {
     'Pérdida de peso': 'WEIGHT_LOSS', 'Mantenimiento': 'MAINTENANCE',
@@ -39,17 +39,21 @@ def current_age(patient, at=None):
 
 
 def patient_projection(patient):
-    data = {k: v for k, v in patient.model_dump().items() if k in PatientDetail.model_fields}
+    data = {k: v for k, v in patient.model_dump(
+    ).items() if k in PatientDetail.model_fields}
     data.update(dietary_projection(patient.dietaryItems))
-    data['defaultGoal'] = GOAL_ALIASES.get(patient.defaultGoal, patient.defaultGoal)
+    data['defaultGoal'] = GOAL_ALIASES.get(
+        patient.defaultGoal, patient.defaultGoal)
     data['conditions'] = [c.description for c in patient.conditions or []]
     data['currentAge'] = current_age(patient)
     data['isDemo'] = patient.demoKey is not None
     consultations = patient.consultations or []
-    data['latestConsultationDate'] = max((c.consultationDate for c in consultations), default=None)
+    data['latestConsultationDate'] = max(
+        (c.consultationDate for c in consultations), default=None)
     plans = [p for c in consultations for p in c.plans or []]
     latest = max(plans, key=lambda p: p.createdAt, default=None)
-    data['latestPlan'] = {'id': latest.id, 'version': latest.version, 'status': latest.status} if latest else None
+    data['latestPlan'] = {'id': latest.id, 'version': latest.version,
+                          'status': latest.status} if latest else None
     return PatientDetail.model_validate(data)
 
 
@@ -59,16 +63,18 @@ def editable(consultation):
 
 def readiness(data, patient):
     issues = []
-    # Minimum age is the explicitly agreed MVP boundary, not a clinical calculation.
+    # La edad mínima define el alcance técnico del MVP, no un criterio clínico.
     if data.get('ageAtConsultation') is None or data['ageAtConsultation'] < 18:
-        issues.append('La consulta requiere una edad registrada de al menos 18 años.')
+        issues.append(
+            'La consulta requiere una edad registrada de al menos 18 años.')
     for field, label in [('weightKg', 'peso'), ('heightM', 'talla'), ('mealsPerDay', 'número de comidas')]:
         if data.get(field) is None or data[field] <= 0:
             issues.append(f'Completa el {label} de la consulta.')
     for field, values, label in [('sex', Sex, 'sexo'), ('activityLevel', ActivityLevel, 'nivel de actividad'), ('goal', NutritionGoal, 'objetivo')]:
         if data.get(field) not in set(values):
             issues.append(f'Define un {label} válido.')
-    warning = SCOPE_WARNING if data.get('requiresProfessionalReview') or patient.conditions else None
+    warning = SCOPE_WARNING if data.get(
+        'requiresProfessionalReview') or patient.conditions else None
     if warning:
         issues.append(warning)
     return issues, warning
@@ -77,10 +83,11 @@ def readiness(data, patient):
 def consultation_projection(consultation):
     data = consultation_read(consultation).model_dump()
     data['goal'] = GOAL_ALIASES.get(data['goal'], data['goal'])
-    issues, warning = readiness(data | {'requiresProfessionalReview': consultation.requiresProfessionalReview}, consultation.patient)
+    issues, warning = readiness(data | {
+                                'requiresProfessionalReview': consultation.requiresProfessionalReview}, consultation.patient)
     data.update(status=consultation.status, requiresProfessionalReview=consultation.requiresProfessionalReview,
-        isEditable=editable(consultation), readinessIssues=issues, scopeWarning=warning,
-        plans=[{'id': p.id, 'version': p.version, 'status': p.status} for p in consultation.plans or []])
+                isEditable=editable(consultation), readinessIssues=issues, scopeWarning=warning,
+                plans=[{'id': p.id, 'version': p.version, 'status': p.status} for p in consultation.plans or []])
     return ConsultationDetail.model_validate(data)
 
 
@@ -106,7 +113,7 @@ async def patients(db):
 async def consultations(db, patient_id):
     await get_patient(db, patient_id)
     rows = await db.nutritionconsultation.find_many(where={'patientId': patient_id},
-        include=CONSULTATION_INCLUDE, order=[{'consultationDate': 'desc'}, {'createdAt': 'desc'}])
+                                                    include=CONSULTATION_INCLUDE, order=[{'consultationDate': 'desc'}, {'createdAt': 'desc'}])
     return [consultation_projection(c) for c in rows]
 
 
@@ -117,12 +124,14 @@ def request_hash(dto, context=''):
 
 def check_retry(receipt, fingerprint):
     if receipt and receipt.requestHash != fingerprint:
-        raise CaptureError(409, 'El identificador de guardado ya se utilizó para otros datos. Recarga el formulario.')
+        raise CaptureError(
+            409, 'El identificador de guardado ya se utilizó para otros datos. Recarga el formulario.')
 
 
 def check_revision(record, expected):
     if expected is not None and record.updatedAt != expected:
-        raise CaptureError(409, 'Los datos cambiaron en otra sesión. Recarga la ficha antes de guardar.')
+        raise CaptureError(
+            409, 'Los datos cambiaron en otra sesión. Recarga la ficha antes de guardar.')
 
 
 async def create_patient(db, dto, key):
@@ -132,15 +141,18 @@ async def create_patient(db, dto, key):
         check_retry(receipt, fingerprint)
         if receipt:
             return patient_projection(await get_patient(tx, receipt.patientId))
-        # Do not merge homonyms or assume age identifies a person.
+        # No fusiona homónimos ni identifica pacientes solo por edad.
         if dto.birthDate or dto.email:
             candidates = await tx.patient.find_many(where={'sex': dto.sex})
             for other in candidates:
-                same_name = ' '.join(other.name.casefold().split()) == ' '.join(dto.name.casefold().split())
-                same_birth = dto.birthDate and other.birthDate and dto.birthDate.date() == other.birthDate.date()
+                same_name = ' '.join(other.name.casefold().split()) == ' '.join(
+                    dto.name.casefold().split())
+                same_birth = dto.birthDate and other.birthDate and dto.birthDate.date(
+                ) == other.birthDate.date()
                 same_email = dto.email and other.email and dto.email.casefold() == other.email.casefold()
                 if same_name and (same_birth or same_email):
-                    raise CaptureError(409, 'Ya existe un paciente con ese nombre y fecha de nacimiento o correo. Revisa su ficha.', other.id)
+                    raise CaptureError(
+                        409, 'Ya existe un paciente con ese nombre y fecha de nacimiento o correo. Revisa su ficha.', other.id)
         data = dietary_create(dto.model_dump(exclude_none=True))
         if dto.age is not None:
             data['ageRecordedAt'] = now()
@@ -166,9 +178,11 @@ async def update_patient(db, patient_id, dto):
         check_revision(patient, dto.expectedUpdatedAt)
         data = dto.model_dump(exclude_unset=True)
         data.pop('expectedUpdatedAt', None)
-        birth, age = data.get('birthDate', patient.birthDate), data.get('age', patient.age)
+        birth, age = data.get('birthDate', patient.birthDate), data.get(
+            'age', patient.age)
         if birth is not None and age is not None:
-            raise CaptureError(422, 'Indica fecha de nacimiento o edad. Vacía el dato anterior para cambiar de modalidad.')
+            raise CaptureError(
+                422, 'Indica fecha de nacimiento o edad. Vacía el dato anterior para cambiar de modalidad.')
         if 'age' in data:
             data['ageRecordedAt'] = now() if data['age'] is not None else None
         await replace_dietary(tx, 'patientId', patient_id, data)
@@ -182,14 +196,18 @@ def validate_capture(data, patient):
     try:
         dto = ConsultationCapture.model_validate(data)
     except ValidationError:
-        raise CaptureError(422, 'Los datos de la consulta son inválidos. Revisa los campos y el presupuesto.') from None
+        raise CaptureError(
+            422, 'Los datos de la consulta son inválidos. Revisa los campos y el presupuesto.') from None
     if dto.consultationDate is not None:
         if dto.consultationDate.date() > now().date():
-            raise CaptureError(422, 'La fecha de la consulta no puede ser futura.')
+            raise CaptureError(
+                422, 'La fecha de la consulta no puede ser futura.')
         if patient.birthDate and dto.consultationDate.date() < patient.birthDate.date():
-            raise CaptureError(422, 'La consulta no puede ser anterior al nacimiento.')
+            raise CaptureError(
+                422, 'La consulta no puede ser anterior al nacimiento.')
         if patient.birthDate and dto.ageAtConsultation is not None and dto.ageAtConsultation != current_age(patient, dto.consultationDate):
-            raise CaptureError(422, 'La edad de consulta no coincide con la fecha de nacimiento.')
+            raise CaptureError(
+                422, 'La edad de consulta no coincide con la fecha de nacimiento.')
     issues, _ = readiness(dto.model_dump(), patient)
     if dto.status == 'READY' and issues:
         raise CaptureError(422, ' '.join(issues))
@@ -204,16 +222,19 @@ async def create_consultation(db, patient_id, dto, key):
         if receipt:
             return consultation_projection(await get_consultation(tx, receipt.consultationId))
         patient = await get_patient(tx, patient_id)
-        # Preload habitual data only when omitted; explicit null/empty values clear it.
+        # Usa valores habituales solo si el request no los especifica.
         defaults = {field: getattr(patient, source) for field, source in {
             'sex': 'sex', 'activityLevel': 'defaultActivityLevel', 'goal': 'defaultGoal',
             'mealsPerDay': 'defaultMealsPerDay', 'dailyBudget': 'defaultDailyBudget'}.items()}
         defaults['goal'] = GOAL_ALIASES.get(defaults['goal'], defaults['goal'])
-        if defaults['goal'] not in set(NutritionGoal): defaults['goal'] = None
-        if defaults['activityLevel'] not in set(ActivityLevel): defaults['activityLevel'] = None
+        if defaults['goal'] not in set(NutritionGoal):
+            defaults['goal'] = None
+        if defaults['activityLevel'] not in set(ActivityLevel):
+            defaults['activityLevel'] = None
         defaults.update(dietary_projection(patient.dietaryItems))
         defaults['consultationDate'] = dto.consultationDate or now()
-        defaults['ageAtConsultation'] = current_age(patient, defaults['consultationDate'])
+        defaults['ageAtConsultation'] = current_age(
+            patient, defaults['consultationDate'])
         data = defaults | dto.model_dump(exclude_unset=True)
         data['consultationDate'] = data.get('consultationDate') or now()
         valid = validate_capture(data, patient)
@@ -223,28 +244,33 @@ async def create_consultation(db, patient_id, dto, key):
 
 
 async def calculate_consultation(db, consultation_id):
-    """Ejecuta el motor determinístico (Fase 3) y agrega un registro al historial de cálculos.
+    """Ejecuta el motor determinístico y agrega un cálculo al historial.
 
-    Nunca sobrescribe un cálculo previo: cada llamada crea una nueva
-    ConsultationCalculation, preservando la reproducibilidad del historial.
-    No exige que la consulta esté en modo edición: un recálculo es válido
-    incluso si ya existe un plan o generación asociados.
+    Cada llamada conserva los cálculos previos y crea un registro nuevo.
     """
     async with db.tx() as tx:
         consultation = await get_consultation(tx, consultation_id)
         data = {field: getattr(consultation, field) for field in
-            ('ageAtConsultation', 'weightKg', 'heightM', 'sex', 'activityLevel', 'goal', 'mealsPerDay')}
-        issues, _ = readiness(data | {'requiresProfessionalReview': consultation.requiresProfessionalReview}, consultation.patient)
+                ('ageAtConsultation', 'weightKg', 'heightM', 'sex', 'activityLevel', 'goal', 'mealsPerDay')}
+        issues, _ = readiness(data | {
+                              'requiresProfessionalReview': consultation.requiresProfessionalReview}, consultation.patient)
         if issues:
             raise CaptureError(422, ' '.join(issues))
         try:
             result = nutrition_calculation_service.calculate(
                 sex=consultation.sex, age_at_consultation=consultation.ageAtConsultation,
                 weight_kg=consultation.weightKg, height_m=consultation.heightM,
-                activity_level=consultation.activityLevel, goal=consultation.goal)
+                activity_level=consultation.activityLevel, goal=consultation.goal,
+                target_calories_override=consultation.targetCaloriesOverride,
+                protein_grams_override=consultation.proteinGramsOverride,
+                carbohydrate_grams_override=consultation.carbohydrateGramsOverride,
+                fat_grams_override=consultation.fatGramsOverride,
+                fiber_grams_override=consultation.fiberGramsOverride,
+                water_liters_override=consultation.waterLitersOverride)
         except NutritionCalculationError as exc:
             raise CaptureError(400, str(exc)) from None
-        details = {**result['details'], 'calculatedAt': result['calculatedAt'].isoformat()}
+        details = {**result['details'],
+                   'calculatedAt': result['calculatedAt'].isoformat()}
         await tx.consultationcalculation.create(data={
             'consultationId': consultation_id,
             'calculationMethod': result['calculationMethod'],
@@ -259,15 +285,19 @@ async def update_consultation(db, consultation_id, dto):
     async with db.tx() as tx:
         consultation = await get_consultation(tx, consultation_id)
         if not editable(consultation):
-            raise CaptureError(409, 'Esta consulta ya no está en captura. Crea una consulta nueva para registrar cambios.')
+            raise CaptureError(
+                409, 'Esta consulta ya no está en captura. Crea una consulta nueva para registrar cambios.')
         check_revision(consultation, dto.expectedUpdatedAt)
         changes = dto.model_dump(exclude_unset=True)
         changes.pop('expectedUpdatedAt', None)
-        current = {k: getattr(consultation, k) for k in ConsultationCapture.model_fields if hasattr(consultation, k)}
+        current = {k: getattr(consultation, k)
+                   for k in ConsultationCapture.model_fields if hasattr(consultation, k)}
         current.update(dietary_projection(consultation.dietaryItems))
-        current['goal'] = GOAL_ALIASES.get(current.get('goal'), current.get('goal'))
+        current['goal'] = GOAL_ALIASES.get(
+            current.get('goal'), current.get('goal'))
         valid = validate_capture(current | changes, consultation.patient)
-        data = valid.model_dump(exclude={'consultationDate'} if valid.consultationDate is None else set())
+        data = valid.model_dump(
+            exclude={'consultationDate'} if valid.consultationDate is None else set())
         await replace_dietary(tx, 'consultationId', consultation_id, data)
         data['updatedAt'] = now()
         await tx.nutritionconsultation.update(where={'id': consultation_id}, data=data)

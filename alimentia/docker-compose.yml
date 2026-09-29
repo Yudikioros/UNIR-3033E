@@ -4,6 +4,8 @@ services:
     environment:
       # El modelo permanece cargado hasta detener el servicio.
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
+      # El API OpenAI-compatible no acepta num_ctx por petición.
+      - OLLAMA_CONTEXT_LENGTH=${ALIMENTIA_LLM_CONTEXT_TOKENS:-4096}
     ports:
       - "11434:11434"
     volumes:
@@ -37,7 +39,10 @@ services:
       - ALIMENTIA_FOOD_DB_PATH=${ALIMENTIA_FOOD_DB_PATH:-/app/data/tables/BAM.xlsx}
       - ALIMENTIA_KNOWLEDGE_MANIFEST_PATH=${ALIMENTIA_KNOWLEDGE_MANIFEST_PATH:-/app/data/knowledge_base/manifest.json}
       - ALIMENTIA_RAG_TOP_K=${ALIMENTIA_RAG_TOP_K:-3}
+      - ALIMENTIA_BAM_SAMPLE_SIZE=${ALIMENTIA_BAM_SAMPLE_SIZE:-8}
       - ALIMENTIA_LLM_TEMPERATURE=${ALIMENTIA_LLM_TEMPERATURE:-0.2}
+      - ALIMENTIA_LLM_CONTEXT_TOKENS=${ALIMENTIA_LLM_CONTEXT_TOKENS:-4096}
+      - ALIMENTIA_LLM_REASONING_EFFORT=${ALIMENTIA_LLM_REASONING_EFFORT:-}
       - ALIMENTIA_LLM_TIMEOUT_SECONDS=${ALIMENTIA_LLM_TIMEOUT_SECONDS:-240}
       - ALIMENTIA_DEFAULT_ACTOR=${ALIMENTIA_DEFAULT_ACTOR:-profesional-demo}
     depends_on:

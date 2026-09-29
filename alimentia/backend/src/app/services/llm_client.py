@@ -1,13 +1,10 @@
 """
-Cliente LLM (Fase 4).
+Cliente para proveedores compatibles con la API de OpenAI.
 
-`LLMClient.generate_structured` es la única abstracción que el resto del
-dominio debe usar para hablar con el proveedor: no acopla nada a Ollama en
-particular, solo requiere un endpoint compatible con la API de OpenAI. Las
-funciones al final del archivo (`client`, `generate_diet_plan_draft`) son la
-ruta heredada de `POST /api/v1/generate-draft`, anterior a Fase 1, y se
-conservan sin cambios.
+El dominio usa `LLMClient`; las funciones heredadas se mantienen para el
+endpoint antiguo mientras siga publicado.
 """
+import logging
 import os
 from typing import TypeVar
 
@@ -16,21 +13,24 @@ from pydantic import BaseModel
 
 from app.schemas.patient import PatientIn
 
+logger = logging.getLogger("uvicorn.error")
+
 T = TypeVar("T", bound=BaseModel)
 
 DEFAULT_TEMPERATURE = float(os.getenv("ALIMENTIA_LLM_TEMPERATURE", "0.2"))
-# 240s por defecto: verificado empíricamente en Fase 4 con Ollama/llama3.2:3b en CPU
-# (María González demo), donde una respuesta real tomó entre 110s y 235s. Un valor
-# más bajo dispara el fallback sin response_format y puede apilar generaciones
-# huérfanas en el proveedor (cada intento fallido deja la generación anterior corriendo
-# del lado del servidor sin cancelarla).
+# El timeout contempla la latencia observada con modelos locales en CPU.
 DEFAULT_TIMEOUT_SECONDS = float(
     os.getenv("ALIMENTIA_LLM_TIMEOUT_SECONDS", "240"))
+# Cada reintento ejecuta una generación completa; se limita para acotar la espera.
+STRUCTURED_RETRY_COUNT = 1
+
 try:
-    STRUCTURED_RETRY_COUNT = min(
-        max(int(os.getenv("ALIMENTIA_STRUCTURED_RETRY_COUNT", "3")), 0), 5)
+    LLM_CONTEXT_TOKENS = int(os.getenv("ALIMENTIA_LLM_CONTEXT_TOKENS", "4096"))
 except ValueError:
-    STRUCTURED_RETRY_COUNT = 3
+    LLM_CONTEXT_TOKENS = 4096
+
+LLM_REASONING_EFFORT = os.getenv(
+    "ALIMENTIA_LLM_REASONING_EFFORT", "").strip().casefold()
 
 
 def llm_status() -> dict:
@@ -58,6 +58,18 @@ def _extract_json(raw: str) -> str:
     return raw.replace("```json", "").replace("```", "").strip()
 
 
+_VALID_REASONING_EFFORTS = {"none", "low", "medium", "high"}
+
+
+def _supported_reasoning_effort(configured: str, supported: list) -> str | None:
+    requested = configured.strip().casefold()
+    if not requested:
+        return None
+    if requested == "none":
+        return "none" if "none" in supported or False in supported else None
+    return requested if requested in supported else None
+
+
 class LLMClient:
     """Envoltorio genérico compatible con OpenAI/Ollama. No guarda API keys reales."""
 
@@ -73,6 +85,14 @@ class LLMClient:
     def provider_name(self) -> str:
         return "ollama" if "ollama" in self.base_url else "openai-compatible"
 
+    def _configured_reasoning_effort(self) -> str | None:
+        if self.provider_name != "ollama":
+            return None
+        # Evita que el razonamiento interno consuma toda la salida JSON.
+        configured = LLM_REASONING_EFFORT or "none"
+        return _supported_reasoning_effort(
+            configured, list(_VALID_REASONING_EFFORTS))
+
     async def generate_structured(self, *, system_prompt: str, user_prompt: str,
                                   response_model: type[T], temperature: float = DEFAULT_TEMPERATURE) -> tuple[T, str]:
         """Llama al proveedor y valida la respuesta contra `response_model`.
@@ -82,25 +102,47 @@ class LLMClient:
         o el JSON no cumple la estructura esperada. Nunca lanza una excepción
         de red/parseo sin envolver.
         """
+        reasoning_effort = self._configured_reasoning_effort()
         messages = [{"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}]
+        request_options = {
+            "model": self.model, "messages": messages, "temperature": temperature,
+            "response_format": {"type": "json_object"},
+        }
+        if reasoning_effort is not None:
+            request_options["reasoning_effort"] = reasoning_effort
+        if self.provider_name == "ollama":
+            request_options["extra_body"] = {
+                "options": {"num_ctx": LLM_CONTEXT_TOKENS}}
         for attempt in range(STRUCTURED_RETRY_COUNT + 1):
             try:
                 response = await self._client.chat.completions.create(
-                    model=self.model, messages=messages, temperature=temperature,
-                    response_format={"type": "json_object"},
+                    **request_options,
                 )
             except Exception:
                 # No todos los backends OpenAI-compatibles soportan response_format; reintentamos sin él.
                 try:
-                    response = await self._client.chat.completions.create(
-                        model=self.model, messages=messages, temperature=temperature)
+                    fallback_options = {**request_options}
+                    fallback_options.pop("response_format", None)
+                    response = await self._client.chat.completions.create(**fallback_options)
                 except Exception as exc:
                     raise LLMGenerationError(
                         f"El proveedor LLM no respondió: {exc}") from exc
 
             raw = response.choices[0].message.content if response.choices else None
             if not raw or not raw.strip():
+                finish_reason = response.choices[0].finish_reason if response.choices else None
+                usage = response.usage
+                logger.warning(
+                    "Respuesta LLM vacía (intento %d/%d): finish_reason=%s usage=%s",
+                    attempt + 1, STRUCTURED_RETRY_COUNT + 1, finish_reason, usage,
+                )
+                if attempt < STRUCTURED_RETRY_COUNT:
+                    messages.append({
+                        "role": "user",
+                        "content": "La respuesta anterior estaba vacía. Devuelve únicamente el objeto JSON solicitado, sin razonamiento ni texto adicional.",
+                    })
+                    continue
                 raise LLMGenerationError(
                     "El proveedor LLM devolvió una respuesta vacía.")
 
@@ -125,8 +167,7 @@ class LLMClient:
             return parsed, raw
 
 
-# --- Ruta heredada (pre-Fase 1), usada por POST /api/v1/generate-draft -----
-# No se toca: firma y comportamiento idénticos a los del prototipo original.
+# Compatibilidad con el endpoint legacy de generación.
 
 client = AsyncOpenAI(
     base_url=os.getenv("LLM_API_URL", "http://ollama:11434/v1"),

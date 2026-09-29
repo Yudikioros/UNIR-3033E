@@ -1,29 +1,9 @@
 """
-AlimentiaAssistantService — asistente conversacional híbrido (corrección
-post-lanzamiento).
+Asistente híbrido para consultar datos de AlimentIA.
 
-Causa raíz corregida: la primera versión pedía al LLM, en TODAS las
-preguntas, decidir qué herramienta usar (1 inferencia real) y luego redactar
-la respuesta (2ª inferencia real) — ~180s cada una. Además, el LLM a veces
-elegía mal la herramienta (`get_patient("María González")`, usando un
-nombre como id), lo que producía un `ToolError` y terminaba en el mensaje de
-fallback genérico.
-
-Arquitectura nueva:
-
-    pregunta -> AssistantIntentRouter (determinístico, sin LLM)
-             -> herramientas AlimentIA (repositorios existentes)
-             -> datos estructurados
-             -> formatter determinístico (texto final, sin LLM)
-             -> [opcional] 1 sola llamada LLM para explicar/sintetizar
-             -> respuesta
-
-Para las intenciones conocidas, el LLM deja de decidir qué herramienta usar
--nunca se le pregunta-. Solo se le llama, como máximo una vez, cuando de
-verdad aporta valor (explicación pedida explícitamente, síntesis de RAG, o
-narrativa de comparación de versiones). El bucle LLM->tool->LLM original se
-conserva íntegro, pero solo como `GENERAL_ASSISTANT` (fallback para
-preguntas que el router no reconoce, sección 8).
+Enruta intenciones conocidas de forma determinística y usa herramientas de
+consulta. El LLM solo explica resultados cuando aporta valor; las preguntas
+no reconocidas siguen el flujo conversacional general.
 """
 import json
 import time
@@ -48,8 +28,7 @@ NO_SOURCES_MESSAGE = "No hay fuentes documentales configuradas actualmente para 
 UNAVAILABLE_MESSAGE = "No fue posible consultar al asistente en este momento."
 ITERATION_LIMIT_MESSAGE = "No fue posible resolver la pregunta con la información disponible en este momento; intenta reformularla o sé más específico."
 
-# Solo estas intenciones deterministas admiten una explicación LLM opcional
-# (sección 17): "explícame" / "qué significa" / "por qué es importante".
+# Solo estas intenciones permiten pedir una explicación opcional al LLM.
 _EXPLAINABLE_INTENTS = {
     Intent.PLAN_APPROVAL_STATUS, Intent.PLAN_VALIDATIONS, Intent.CONSULTATION_CALCULATION,
     Intent.PATIENT_BY_NAME, Intent.PLAN_DETAIL,
@@ -68,37 +47,38 @@ Responde SIEMPRE con un JSON que cumpla exactamente este formato, sin texto adic
 
 TOOL_REGISTRY: dict[ToolName, dict] = {
     ToolName.GET_PATIENT: {"fn": assistant_tools.get_patient_tool, "params": ["patient_id"],
-        "description": "Resumen de un paciente (nombre, sexo, edad, objetivo habitual, condiciones) por su id."},
+                           "description": "Resumen de un paciente (nombre, sexo, edad, objetivo habitual, condiciones) por su id."},
     ToolName.SEARCH_PATIENTS: {"fn": assistant_tools.search_patients_tool, "params": ["query"],
-        "description": "Busca pacientes por nombre (coincidencia parcial). Úsala cuando el usuario mencione un nombre en vez de un id."},
+                               "description": "Busca pacientes por nombre (coincidencia parcial). Úsala cuando el usuario mencione un nombre en vez de un id."},
     ToolName.GET_PATIENT_CONSULTATIONS: {"fn": assistant_tools.get_patient_consultations_tool, "params": ["patient_id"],
-        "description": "Lista las consultas nutricionales de un paciente, con sus objetivos calculados."},
+                                         "description": "Lista las consultas nutricionales de un paciente, con sus objetivos calculados."},
     ToolName.GET_CONSULTATION: {"fn": assistant_tools.get_consultation_tool, "params": ["consultation_id"],
-        "description": "Detalle de una consulta específica por id."},
+                                "description": "Detalle de una consulta específica por id."},
     ToolName.GET_CONSULTATION_CALCULATION: {"fn": assistant_tools.get_consultation_calculation_tool, "params": ["consultation_id"],
-        "description": "Detalle del cálculo determinístico (BMR, TDEE, factor de actividad, ajuste, macros) de una consulta."},
+                                            "description": "Detalle del cálculo determinístico (BMR, TDEE, factor de actividad, ajuste, macros) de una consulta."},
     ToolName.GET_PATIENT_PLANS: {"fn": assistant_tools.get_patient_plans_tool, "params": ["patient_id"],
-        "description": "Lista todos los planes (todas las versiones, todas las consultas) de un paciente."},
+                                 "description": "Lista todos los planes (todas las versiones, todas las consultas) de un paciente."},
     ToolName.GET_CONSULTATION_PLANS: {"fn": assistant_tools.get_consultation_plans_tool, "params": ["consultation_id"],
-        "description": "Lista las versiones de plan de una consulta específica."},
+                                      "description": "Lista las versiones de plan de una consulta específica."},
     ToolName.GET_PLAN: {"fn": assistant_tools.get_plan_tool, "params": ["plan_id"],
-        "description": "Detalle completo de un plan: estado, energía, comidas, alimentos, validaciones y fuentes."},
+                        "description": "Detalle completo de un plan: estado, energía, comidas, alimentos, validaciones y fuentes."},
     ToolName.GET_PLAN_VALIDATIONS: {"fn": assistant_tools.get_plan_validations_tool, "params": ["plan_id"],
-        "description": "Solo las validaciones (bloqueantes/advertencias/informativas) de un plan."},
+                                    "description": "Solo las validaciones (bloqueantes/advertencias/informativas) de un plan."},
     ToolName.GET_PLAN_SOURCES: {"fn": assistant_tools.get_plan_sources_tool, "params": ["plan_id"],
-        "description": "Solo las fuentes documentales realmente recuperadas para un plan."},
+                                "description": "Solo las fuentes documentales realmente recuperadas para un plan."},
     ToolName.COMPARE_PLAN_VERSIONS: {"fn": assistant_tools.compare_plan_versions_tool, "params": ["plan_id_a", "plan_id_b"],
-        "description": "Compara dos versiones de plan (por id) de forma determinística: estado, energía, alimentos agregados/quitados, cantidades, validaciones."},
+                                     "description": "Compara dos versiones de plan (por id) de forma determinística: estado, energía, alimentos agregados/quitados, cantidades, validaciones."},
     ToolName.SEARCH_KNOWLEDGE: {"fn": assistant_tools.search_knowledge_tool, "params": ["query"],
-        "description": "Busca en los documentos autorizados (RAG) fragmentos relevantes a una pregunta documental."},
+                                "description": "Busca en los documentos autorizados (RAG) fragmentos relevantes a una pregunta documental."},
     ToolName.LIST_KNOWLEDGE_SOURCES: {"fn": assistant_tools.list_knowledge_sources_tool, "params": [],
-        "description": "Lista todas las fuentes documentales autorizadas registradas en el sistema."},
+                                      "description": "Lista todas las fuentes documentales autorizadas registradas en el sistema."},
     ToolName.COUNT_PLANS_BY_STATUS: {"fn": assistant_tools.count_plans_by_status_tool, "params": [],
-        "description": "Cuenta cuántos planes existen por cada estado (DRAFT, UNDER_REVIEW, APPROVED, REJECTED, etc.)."},
+                                     "description": "Cuenta cuántos planes existen por cada estado (DRAFT, UNDER_REVIEW, APPROVED, REJECTED, etc.)."},
     ToolName.LIST_PATIENTS_BY_PLAN_STATUS: {"fn": assistant_tools.list_patients_by_plan_status_tool, "params": ["status"],
-        "description": "Lista pacientes cuyo plan tiene un estado dado (por ejemplo UNDER_REVIEW o APPROVED)."},
+                                            "description": "Lista pacientes cuyo plan tiene un estado dado (por ejemplo UNDER_REVIEW o APPROVED)."},
 }
-_ID_PARAMS = {"patient_id", "consultation_id", "plan_id", "plan_id_a", "plan_id_b"}
+_ID_PARAMS = {"patient_id", "consultation_id",
+              "plan_id", "plan_id_a", "plan_id_b"}
 
 
 def _tools_description() -> str:
@@ -145,11 +125,7 @@ def _to_jsonable(value):
 
 
 def _summarize_result(tool: ToolName, result) -> tuple[str, list[AssistantSourceCitation], dict | None]:
-    """Serializa el resultado para dárselo de vuelta al LLM (solo en el
-    fallback GENERAL_ASSISTANT), y extrae -sin pasar por el LLM- las fuentes
-    y los hechos estructurados relevantes para el "grounding": esos dos
-    nunca se derivan del texto libre del modelo, siempre de lo que la
-    herramienta realmente devolvió."""
+    """Serializa el resultado y separa fuentes y hechos verificados."""
     text = json.dumps(_to_jsonable(result), ensure_ascii=False)[:4000]
     sources: list[AssistantSourceCitation] = []
     structured: dict | None = None
@@ -165,7 +141,8 @@ def _summarize_result(tool: ToolName, result) -> tuple[str, list[AssistantSource
                    for s in result]
     elif tool == ToolName.GET_PLAN_VALIDATIONS:
         blocking = sum(1 for v in result if v.isBlocking)
-        structured = {"blockingValidationCount": blocking, "canApprove": blocking == 0}
+        structured = {"blockingValidationCount": blocking,
+                      "canApprove": blocking == 0}
     elif tool == ToolName.SEARCH_KNOWLEDGE:
         sources = [AssistantSourceCitation(sourceId=c.sourceId, documentName=c.documentName, institution=c.institution)
                    for c in result]
@@ -177,18 +154,17 @@ def _summarize_result(tool: ToolName, result) -> tuple[str, list[AssistantSource
 
 
 def _apply_grounding(answer: str, structured: dict | None) -> str:
-    """Antepone hechos verificados directamente de la base de datos (nunca
-    redactados por el LLM) cuando existen, para que la respuesta final nunca
-    contradiga el estado estructurado real."""
+    """Añade a la respuesta los hechos estructurados verificados."""
     if not structured:
         return answer
     facts = []
     if structured.get("targetCalories") is not None:
-        facts.append(f"Energía objetivo registrada en AlimentIA: {structured['targetCalories']:.0f} kcal.")
+        facts.append(
+            f"Energía objetivo registrada en AlimentIA: {structured['targetCalories']:.0f} kcal.")
     if "blockingValidationCount" in structured:
         n = structured["blockingValidationCount"]
         facts.append(f"Estado verificado: este plan tiene {n} validación(es) bloqueante(s) y no puede aprobarse todavía."
-                      if n > 0 else "Estado verificado: este plan no tiene validaciones bloqueantes pendientes.")
+                     if n > 0 else "Estado verificado: este plan no tiene validaciones bloqueantes pendientes.")
     if not facts:
         return answer
     prefix = " ".join(facts)
@@ -206,17 +182,19 @@ def _build_user_prompt(request: AssistantChatRequest, observations: list[str]) -
     ]
     if request.conversation:
         lines.append("\nConversación previa (más reciente al final):")
-        lines.extend(f"{turn.role}: {turn.content}" for turn in request.conversation[-6:])
+        lines.extend(
+            f"{turn.role}: {turn.content}" for turn in request.conversation[-6:])
     lines.append(f"\nPregunta del profesional: {request.message}")
     if observations:
-        lines.append("\nResultados de herramientas ya ejecutadas en este turno:")
+        lines.append(
+            "\nResultados de herramientas ya ejecutadas en este turno:")
         lines.extend(observations)
         lines.append("\nCon esta información, decide: responder ahora (action=answer), pedir una aclaración "
-                      "(action=ask_clarification) o usar otra herramienta distinta si de verdad falta información "
-                      "(action=use_tool). No repitas una herramienta ya usada con los mismos argumentos.")
+                     "(action=ask_clarification) o usar otra herramienta distinta si de verdad falta información "
+                     "(action=use_tool). No repitas una herramienta ya usada con los mismos argumentos.")
     else:
         lines.append("\nDecide qué herramienta usar para responder, o responde directamente (action=answer) "
-                      "si la pregunta no requiere consultar información de AlimentIA (por ejemplo, un saludo).")
+                     "si la pregunta no requiere consultar información de AlimentIA (por ejemplo, un saludo).")
     return "\n".join(lines)
 
 
@@ -237,7 +215,7 @@ class AlimentiaAssistantService:
     def __init__(self, llm_client: LLMClient | None = None):
         self.llm_client = llm_client or LLMClient()
 
-    # --- Orquestación --------------------------------------------------
+    # Orquestación
 
     async def chat(self, db, request: AssistantChatRequest) -> AssistantChatResponse:
         started = time.monotonic()
@@ -260,10 +238,11 @@ class AlimentiaAssistantService:
         execution_ms = int((time.monotonic() - started) * 1000)
         try:
             await assistant_repo.log_interaction(db, prompt_version=ALIMENTIA_ASSISTANT_PROMPT_VERSION,
-                model=self.llm_client.model, user_question=request.message,
-                navigation_context=request.context.model_dump(), tools_used=outcome.tools_used,
-                source_ids=[source.sourceId for source in outcome.sources],
-                execution_time_ms=execution_ms, status=status, error_message=error_message)
+                                                 model=self.llm_client.model, user_question=request.message,
+                                                 navigation_context=request.context.model_dump(), tools_used=outcome.tools_used,
+                                                 source_ids=[
+                                                     source.sourceId for source in outcome.sources],
+                                                 execution_time_ms=execution_ms, status=status, error_message=error_message)
         except Exception:
             pass  # la trazabilidad nunca debe impedir responder al usuario.
 
@@ -272,7 +251,8 @@ class AlimentiaAssistantService:
             structuredData=outcome.structured_data,
             metadata=AssistantResponseMetadata(
                 model=self.llm_client.model, promptVersion=ALIMENTIA_ASSISTANT_PROMPT_VERSION,
-                executionTimeMs=execution_ms, toolIterations=len(outcome.tools_used),
+                executionTimeMs=execution_ms, toolIterations=len(
+                    outcome.tools_used),
                 routingTimeMs=routing_time_ms, toolExecutionTimeMs=tool_execution_time_ms,
                 llmExecutionTimeMs=outcome.llm_time_ms, responseMode=outcome.response_mode))
 
@@ -296,7 +276,7 @@ class AlimentiaAssistantService:
             return await self._handle_general(db, request)
         return await handler(db, routed)
 
-    # --- Resolución de pacientes por nombre (sección 4/10) --------------
+    # Resolución de pacientes por nombre
 
     async def _resolve_patient(self, db, name: str | None) -> tuple[str | None, _Outcome | None]:
         if not name:
@@ -308,7 +288,7 @@ class AlimentiaAssistantService:
             return None, _Outcome(answer=fmt.format_multiple_patients(name, matches), tools_used=["search_patients"], final=True)
         return matches[0].id, None
 
-    # --- Handlers deterministas ------------------------------------------
+    # Consultas determinísticas
 
     async def _handle_patient_by_name(self, db, routed: RoutedQuestion) -> _Outcome:
         patient_id, error = await self._resolve_patient(db, routed.patientName)
@@ -324,7 +304,7 @@ class AlimentiaAssistantService:
         patient = await assistant_tools.get_patient_tool(db, patient_id)
         plans = await assistant_tools.get_patient_plans_tool(db, patient_id)
         return _Outcome(answer=fmt.format_patient_plans(patient.name, plans),
-            tools_used=["search_patients", "get_patient", "get_patient_plans"])
+                        tools_used=["search_patients", "get_patient", "get_patient_plans"])
 
     async def _handle_patient_consultations(self, db, routed: RoutedQuestion) -> _Outcome:
         patient_id, error = await self._resolve_patient(db, routed.patientName)
@@ -333,7 +313,7 @@ class AlimentiaAssistantService:
         patient = await assistant_tools.get_patient_tool(db, patient_id)
         consultations = await assistant_tools.get_patient_consultations_tool(db, patient_id)
         return _Outcome(answer=fmt.format_patient_consultations(patient.name, consultations),
-            tools_used=["search_patients", "get_patient", "get_patient_consultations"])
+                        tools_used=["search_patients", "get_patient", "get_patient_consultations"])
 
     async def _handle_consultation_calculation(self, db, routed: RoutedQuestion) -> _Outcome:
         patient_id, error = await self._resolve_patient(db, routed.patientName)
@@ -341,20 +321,22 @@ class AlimentiaAssistantService:
             return error
         patient = await assistant_tools.get_patient_tool(db, patient_id)
         consultations = await assistant_tools.get_patient_consultations_tool(db, patient_id)
-        tools_used = ["search_patients", "get_patient", "get_patient_consultations"]
+        tools_used = ["search_patients",
+                      "get_patient", "get_patient_consultations"]
         if not consultations:
             return _Outcome(answer=f"{patient.name} todavía no tiene ninguna consulta registrada.",
-                tools_used=tools_used, final=True)
-        latest = sorted(consultations, key=lambda c: c.consultationDate, reverse=True)[0]
+                            tools_used=tools_used, final=True)
+        latest = sorted(
+            consultations, key=lambda c: c.consultationDate, reverse=True)[0]
         try:
             calculation = await assistant_tools.get_consultation_calculation_tool(db, latest.id)
         except ToolError:
             return _Outcome(answer=f"La consulta más reciente de {patient.name} todavía no tiene un cálculo nutricional registrado.",
-                tools_used=tools_used, final=True)
+                            tools_used=tools_used, final=True)
         structured = {"targetCalories": calculation.targetCalories, "basalMetabolicRate": calculation.basalMetabolicRate,
                       "totalEnergyExpenditure": calculation.totalEnergyExpenditure}
         return _Outcome(answer=fmt.format_calculation_summary(patient.name, calculation),
-            tools_used=[*tools_used, "get_consultation_calculation"], structured_data=structured)
+                        tools_used=[*tools_used, "get_consultation_calculation"], structured_data=structured)
 
     async def _handle_plan_detail(self, db, routed: RoutedQuestion) -> _Outcome:
         if not assistant_router.is_valid_id(routed.planIdA):
@@ -376,7 +358,8 @@ class AlimentiaAssistantService:
             plan = await assistant_tools.get_plan_tool(db, routed.planIdA)
         except ToolError as exc:
             return _Outcome(answer=str(exc), tools_used=["get_plan"], final=True)
-        structured = {"blockingValidationCount": plan.blockingValidationCount, "canApprove": plan.blockingValidationCount == 0}
+        structured = {"blockingValidationCount": plan.blockingValidationCount,
+                      "canApprove": plan.blockingValidationCount == 0}
         return _Outcome(answer=fmt.format_plan_validations(plan), tools_used=["get_plan"], structured_data=structured)
 
     async def _handle_plan_approval(self, db, routed: RoutedQuestion) -> _Outcome:
@@ -400,7 +383,8 @@ class AlimentiaAssistantService:
             comparison = await assistant_tools.compare_plan_versions_tool(db, routed.planIdA, routed.planIdB)
         except ToolError as exc:
             return _Outcome(answer=str(exc), tools_used=["compare_plan_versions"], final=True)
-        outcome = _Outcome(answer=fmt.format_plan_comparison(comparison), tools_used=["compare_plan_versions"])
+        outcome = _Outcome(answer=fmt.format_plan_comparison(
+            comparison), tools_used=["compare_plan_versions"])
         # La comparación siempre se narra (sección 7): una sola llamada LLM.
         return await self._maybe_explain(outcome, "Explica esta comparación de versiones de forma breve.")
 
@@ -426,7 +410,8 @@ class AlimentiaAssistantService:
             return _Outcome(answer=NO_SOURCES_MESSAGE, tools_used=["search_knowledge"], final=True)
         sources = [AssistantSourceCitation(sourceId=c.sourceId, documentName=c.documentName, institution=c.institution)
                    for c in chunks]
-        context_text = "\n\n".join(f"[{c.documentName}] {c.content}" for c in chunks)
+        context_text = "\n\n".join(
+            f"[{c.documentName}] {c.content}" for c in chunks)
         prompt = (f"Fragmentos documentales recuperados (usa SOLO esta información, nunca la combines con "
                   f"conocimiento general ni inventes otra fuente):\n{context_text}\n\n"
                   f"Pregunta: {routed.knowledgeQuery}\n\n"
@@ -438,10 +423,11 @@ class AlimentiaAssistantService:
             llm_time_ms = int((time.monotonic() - started) * 1000)
             answer = (explanation.answer or "").strip() or NO_ANSWER_MESSAGE
             return _Outcome(answer=answer, tools_used=["search_knowledge"], sources=sources,
-                response_mode="llm", llm_time_ms=llm_time_ms)
+                            response_mode="llm", llm_time_ms=llm_time_ms)
         except LLMGenerationError:
             # El LLM no respondió: los fragmentos reales igual son una respuesta válida (nunca un 500).
-            fallback = "\n\n".join(f"Según {c.documentName}: {c.content[:300]}" for c in chunks)
+            fallback = "\n\n".join(
+                f"Según {c.documentName}: {c.content[:300]}" for c in chunks)
             return _Outcome(answer=fallback, tools_used=["search_knowledge"], sources=sources)
 
     async def _maybe_explain(self, outcome: _Outcome, question: str) -> _Outcome:
@@ -464,7 +450,7 @@ class AlimentiaAssistantService:
         explained = (explanation.answer or "").strip()
         combined = f"{outcome.answer}\n\n{explained}" if explained else outcome.answer
         return _Outcome(answer=combined, tools_used=outcome.tools_used, sources=outcome.sources,
-            structured_data=outcome.structured_data, response_mode="llm", llm_time_ms=llm_time_ms, final=outcome.final)
+                        structured_data=outcome.structured_data, response_mode="llm", llm_time_ms=llm_time_ms, final=outcome.final)
 
     # --- Fallback: bucle LLM->tool->LLM original (solo GENERAL_ASSISTANT) --
 
@@ -487,7 +473,7 @@ class AlimentiaAssistantService:
             except LLMGenerationError:
                 llm_time_ms += int((time.monotonic() - llm_started) * 1000)
                 return _Outcome(answer=UNAVAILABLE_MESSAGE, tools_used=tools_used, sources=sources,
-                    structured_data=structured_data, response_mode="llm", llm_time_ms=llm_time_ms, final=True)
+                                structured_data=structured_data, response_mode="llm", llm_time_ms=llm_time_ms, final=True)
             llm_time_ms += int((time.monotonic() - llm_started) * 1000)
 
             action = (decision.action or "").strip().lower()
@@ -500,12 +486,15 @@ class AlimentiaAssistantService:
 
             tool_meta = TOOL_REGISTRY.get(decision.tool)
             if tool_meta is None:
-                observations.append(f"[{decision.tool}] Herramienta no reconocida; usa solo las herramientas listadas.")
+                observations.append(
+                    f"[{decision.tool}] Herramienta no reconocida; usa solo las herramientas listadas.")
                 continue
 
-            call_key = (decision.tool.value, json.dumps(decision.arguments, sort_keys=True))
+            call_key = (decision.tool.value, json.dumps(
+                decision.arguments, sort_keys=True))
             if call_key in used_calls:
-                observations.append(f"[{decision.tool}] Ya se ejecutó con estos mismos argumentos; usa la información anterior o responde.")
+                observations.append(
+                    f"[{decision.tool}] Ya se ejecutó con estos mismos argumentos; usa la información anterior o responde.")
                 continue
             used_calls.add(call_key)
 
@@ -518,7 +507,7 @@ class AlimentiaAssistantService:
             # herramienta era get_patient, se redirige automáticamente a
             # search_patients (exactamente el caso real reportado).
             bad_id_params = [p for p in tool_meta["params"]
-                              if p in _ID_PARAMS and kwargs.get(p) and not assistant_router.is_valid_id(kwargs[p])]
+                             if p in _ID_PARAMS and kwargs.get(p) and not assistant_router.is_valid_id(kwargs[p])]
             if bad_id_params:
                 candidate = kwargs[bad_id_params[0]]
                 if decision.tool == ToolName.GET_PATIENT:
@@ -526,16 +515,17 @@ class AlimentiaAssistantService:
                     tools_used.append("search_patients")
                     if len(matches) == 1:
                         observations.append(f'[search_patients] "{candidate}" se interpretó como nombre; paciente encontrado: '
-                                             f"{json.dumps(matches[0].model_dump(mode='json'), ensure_ascii=False)}")
+                                            f"{json.dumps(matches[0].model_dump(mode='json'), ensure_ascii=False)}")
                     elif not matches:
-                        observations.append(f'[search_patients] No se encontró ningún paciente llamado "{candidate}".')
+                        observations.append(
+                            f'[search_patients] No se encontró ningún paciente llamado "{candidate}".')
                     else:
                         names = ", ".join(match.name for match in matches)
                         observations.append(f'[search_patients] Hay {len(matches)} pacientes que coinciden con '
-                                             f'"{candidate}": {names}. Responde pidiendo aclaración (action=ask_clarification).')
+                                            f'"{candidate}": {names}. Responde pidiendo aclaración (action=ask_clarification).')
                 else:
                     observations.append(f"[{decision.tool}] El valor '{candidate}' no tiene forma de id; "
-                                         "usa search_patients primero si es un nombre, o pide aclaración.")
+                                        "usa search_patients primero si es un nombre, o pide aclaración.")
                 continue
 
             tools_used.append(decision.tool.value)
@@ -549,7 +539,8 @@ class AlimentiaAssistantService:
                 answer = NO_SOURCES_MESSAGE
                 break
 
-            text, extracted_sources, extracted_structured = _summarize_result(decision.tool, result)
+            text, extracted_sources, extracted_structured = _summarize_result(
+                decision.tool, result)
             observations.append(f"[{decision.tool}] {text}")
             for source in extracted_sources:
                 if source.sourceId not in source_ids:
@@ -563,4 +554,4 @@ class AlimentiaAssistantService:
         if answer != NO_SOURCES_MESSAGE:
             answer = _apply_grounding(answer, structured_data)
         return _Outcome(answer=answer, tools_used=tools_used, sources=sources, structured_data=structured_data,
-            response_mode="llm", llm_time_ms=llm_time_ms)
+                        response_mode="llm", llm_time_ms=llm_time_ms)

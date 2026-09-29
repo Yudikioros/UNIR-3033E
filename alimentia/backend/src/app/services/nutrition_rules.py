@@ -1,19 +1,8 @@
 """
-Matriz de trazabilidad de reglas nutricionales (Fase 6, Parte A).
+Clasifica el sustento de las reglas sin modificar sus valores.
 
-Auditoría metodológica del motor determinístico de Fase 3: no cambia ninguna
-fórmula, constante ni resultado histórico. Este módulo solo LEE las
-constantes ya centralizadas en `calculator.py` y las clasifica según su
-sustento real -nunca asume que una constante es clínicamente válida solo
-porque ya existe en código-.
-
-Clasificaciones (`evidenceStatus`), sin fuentes inventadas:
-
-    SOURCE_BACKED               referencia académica/normativa real y verificable
-    MVP_ASSUMPTION              regla de uso común, sin fuente seleccionada en el sistema
-    PROFESSIONAL_CONFIGURABLE   candidata a exponerse como parámetro editable en el futuro
-    TECHNICAL_GUARD             límite técnico de captura, no un límite clínico
-    MVP_VALIDATION_THRESHOLD    umbral de validación del MVP, no una prescripción clínica
+Las categorías distinguen referencias documentadas, supuestos del MVP,
+parámetros configurables, límites técnicos y umbrales de validación.
 """
 from app.services import calculator
 

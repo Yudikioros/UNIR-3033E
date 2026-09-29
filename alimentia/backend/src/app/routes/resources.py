@@ -1,8 +1,4 @@
-"""Rutas de estado e ingesta de recursos externos (PDFs y BAM.xlsx).
-
-Aisladas del arranque LLM/RAG completo, igual que capture.py, para poder
-probarse sin depender de Qdrant/Ollama en ejecución.
-"""
+"""Expone el estado e ingesta de los recursos externos."""
 from fastapi import APIRouter, HTTPException, Request
 from app.repositories.knowledge import knowledge_base_status_db
 from app.services.food_db import food_database_status
@@ -23,12 +19,9 @@ _INGEST_MESSAGES = {
 @router.get('/resources/status')
 async def resources_status(request: Request):
     return {
-        # Administración de documentos (sección 32): refleja el estado real
-        # en base de datos (KnowledgeSource.indexStatus), nunca un valor
-        # cacheado ni derivado solo de archivos en disco.
+        # El estado de indexación proviene del registro persistido.
         'knowledgeBase': await knowledge_base_status_db(request.app.state.db),
         'foodDatabase': food_database_status(),
-        # Fase 6, sección 36: nunca llama al motor/LLM para determinar el estado.
         'calculationEngine': {'ready': True, 'rulesetVersion': NUTRITION_RULESET_VERSION},
         'llm': llm_status(),
     }

@@ -1,13 +1,4 @@
-"""
-Rutas de fuentes de conocimiento (Fase 3.5) y de administración de
-documentos (alta, eliminación, visualización, descarga, reintento de
-indexación).
-
-El frontend nunca envía ni recibe una ruta física (sección 14): solo
-`source_id`. `knowledge_storage.resolve_stored_path` es el único punto que
-traduce eso a un archivo real, siempre verificado dentro del directorio
-autorizado.
-"""
+"""Administra fuentes documentales sin exponer rutas físicas al cliente."""
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
@@ -32,7 +23,8 @@ async def source(source_id: str, request: Request):
     try:
         return await get_source(request.app.state.db, source_id)
     except KnowledgeSourceNotFound:
-        raise HTTPException(status_code=404, detail='No se encontró la fuente de conocimiento.')
+        raise HTTPException(
+            status_code=404, detail='No se encontró la fuente de conocimiento.')
 
 
 @router.post('/sources', status_code=201)
@@ -75,16 +67,21 @@ async def _resolve_document_path(request: Request, source_id: str):
     try:
         row = await get_source_row(request.app.state.db, source_id)
     except KnowledgeSourceNotFound:
-        raise HTTPException(status_code=404, detail='No se encontró la fuente de conocimiento.')
+        raise HTTPException(
+            status_code=404, detail='No se encontró la fuente de conocimiento.')
     if not row.isActive or not row.storedFilename:
-        raise HTTPException(status_code=404, detail='El documento de esta fuente ya no está disponible en la biblioteca.')
+        raise HTTPException(
+            status_code=404, detail='El documento de esta fuente ya no está disponible en la biblioteca.')
     try:
         path = knowledge_storage.resolve_stored_path(row.storedFilename)
     except knowledge_storage.FileValidationError:
-        raise HTTPException(status_code=404, detail='El documento de esta fuente ya no está disponible.')
+        raise HTTPException(
+            status_code=404, detail='El documento de esta fuente ya no está disponible.')
     if not path.exists():
-        raise HTTPException(status_code=404, detail='El documento de esta fuente ya no está disponible.')
-    display_name = knowledge_storage.sanitize_display_filename(row.originalFilename or path.name)
+        raise HTTPException(
+            status_code=404, detail='El documento de esta fuente ya no está disponible.')
+    display_name = knowledge_storage.sanitize_display_filename(
+        row.originalFilename or path.name)
     return path, display_name
 
 

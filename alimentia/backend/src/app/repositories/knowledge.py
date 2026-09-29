@@ -1,9 +1,4 @@
-"""Sincronización, lectura y administración de fuentes de conocimiento
-(Fase 3.5; administración de documentos en la corrección de UX).
-
-Nunca da de alta una fuente que no esté declarada en el manifiesto (ver
-`app.services.knowledge_manifest`); nunca inventa procedencia.
-"""
+"""Sincroniza fuentes autorizadas y consulta su estado persistido."""
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,7 +67,8 @@ async def resolve_source_id(db, manifest_source_id: str) -> str | None:
     if row:
         return row.id
     manifest = knowledge_manifest.load_manifest()
-    entry = next((source for source in manifest['sources'] if source['id'] == manifest_source_id), None)
+    entry = next(
+        (source for source in manifest['sources'] if source['id'] == manifest_source_id), None)
     if entry is None:
         return None
     row = await db.knowledgesource.find_first(where={'originalFilename': entry['file']})
@@ -80,7 +76,8 @@ async def resolve_source_id(db, manifest_source_id: str) -> str | None:
 
 
 def _source_read(row) -> KnowledgeSourceRead:
-    data = {k: v for k, v in row.model_dump().items() if k in KnowledgeSourceRead.model_fields}
+    data = {k: v for k, v in row.model_dump().items(
+    ) if k in KnowledgeSourceRead.model_fields}
     return KnowledgeSourceRead.model_validate(data)
 
 
@@ -125,8 +122,8 @@ async def has_history(db, source_id: str) -> bool:
 
 
 async def create_pending_source(db, *, manifest_source_id: str, document_name: str, institution: str | None,
-                                 version: str | None, source_type: str, publication_date, original_filename: str,
-                                 stored_filename: str, checksum: str):
+                                version: str | None, source_type: str, publication_date, original_filename: str,
+                                stored_filename: str, checksum: str):
     return await db.knowledgesource.create(data={
         'documentName': document_name, 'institution': institution, 'version': version,
         'sourceType': source_type, 'publicationDate': publication_date,

@@ -52,7 +52,7 @@ class PromptContentTests(unittest.TestCase):
         self.assertNotIn('calcula los requerimientos', system_prompt.lower())
 
     def test_prompt_version_centralizada(self):
-        self.assertEqual(gen.DIET_PLAN_PROMPT_VERSION, '1.1')
+        self.assertEqual(gen.DIET_PLAN_PROMPT_VERSION, '1.2')
 
     def test_prompt_exige_autoverificacion_y_tolerancias(self):
         context = _context()
@@ -77,6 +77,81 @@ class PromptContentTests(unittest.TestCase):
             context, [food], [], food_available=True, knowledge_available=False)
         self.assertIn('POLLO PECHUGA', user_prompt)
         self.assertIn('Datos verificados de la base alimentaria', user_prompt)
+        self.assertIn('nombre exacto', user_prompt)
+        self.assertIn('food.unit debe ser exactamente "g"', user_prompt)
+
+    def test_sin_preferencias_incluye_catalogo_bam_y_muestra_aleatoria(self):
+        calls = []
+
+        class FoodService:
+            def search(self, query, limit):
+                calls.append(('search', query, limit))
+                return [types.SimpleNamespace(id=query, name=query.upper())]
+
+            def sample(self, count):
+                calls.append(('sample', count))
+                return [types.SimpleNamespace(
+                    id='random-1', name='ALIMENTO ALEATORIO')]
+
+        foods = gen._verified_foods_for_prompt(FoodService(), [])
+
+        expected_anchor_names = [
+            query.upper() for query in gen.DEFAULT_FOOD_QUERIES]
+        self.assertEqual([food.name for food in foods],
+                         expected_anchor_names + ['ALIMENTO ALEATORIO'])
+        self.assertEqual(calls, [('search', query, 1)
+                                 for query in gen.DEFAULT_FOOD_QUERIES] +
+                         [('sample', gen.BAM_SAMPLE_SIZE + len(gen.DEFAULT_FOOD_QUERIES))])
+
+    def test_catalogo_bam_agrega_la_muestra_configurada(self):
+        class FoodService:
+            def search(self, query, limit):
+                return [types.SimpleNamespace(id=query, name=query.upper())]
+
+            def sample(self, count):
+                return [types.SimpleNamespace(id=f'random-{index}', name=f'RANDOM {index}')
+                        for index in range(count)]
+
+        foods = gen._verified_foods_for_prompt(FoodService(), [])
+
+        self.assertEqual(
+            len(foods), len(gen.DEFAULT_FOOD_QUERIES) + gen.BAM_SAMPLE_SIZE)
+
+    def test_muestra_aleatoria_descarta_duplicados_de_los_alimentos_base(self):
+        first_anchor = gen.DEFAULT_FOOD_QUERIES[0]
+
+        class FoodService:
+            def search(self, query, limit):
+                return [types.SimpleNamespace(id=query, name=query.upper())]
+
+            def sample(self, count):
+                return [types.SimpleNamespace(id=first_anchor, name=first_anchor)] + [
+                    types.SimpleNamespace(
+                        id=f'random-{index}', name=f'RANDOM {index}')
+                    for index in range(count - 1)]
+
+        foods = gen._verified_foods_for_prompt(FoodService(), [])
+
+        random_foods = [
+            food for food in foods if food.id.startswith('random-')]
+        self.assertEqual(len(random_foods), gen.BAM_SAMPLE_SIZE)
+
+    def test_con_preferencias_no_usa_muestra_aleatoria(self):
+        calls = []
+
+        class FoodService:
+            def search(self, query, limit):
+                calls.append(('search', query, limit))
+                return [types.SimpleNamespace(id=query, name=query.upper())]
+
+            def sample(self, count):
+                calls.append(('sample', count))
+                return []
+
+        foods = gen._verified_foods_for_prompt(FoodService(), ['pollo'])
+
+        self.assertEqual([food.name for food in foods], ['POLLO'])
+        self.assertEqual(calls, [('search', 'pollo', 2)])
 
     def test_rag_vacio_en_prompt(self):
         context = _context()
