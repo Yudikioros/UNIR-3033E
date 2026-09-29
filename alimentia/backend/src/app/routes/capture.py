@@ -1,4 +1,4 @@
-"""REST routes isolated from LLM/RAG startup, also used by the HTTP test app."""
+"""Rutas de captura independientes del arranque de LLM y RAG."""
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
@@ -15,12 +15,13 @@ from app.services import diet_plan_generation
 class CaptureRoute(APIRoute):
     def get_route_handler(self):
         original = super().get_route_handler()
+
         async def handler(request):
             try:
                 return await original(request)
             except repo.CaptureError as exc:
                 return JSONResponse(status_code=exc.status,
-                    content={'message': exc.message, 'existingId': exc.existing_id, **exc.extra})
+                                    content={'message': exc.message, 'existingId': exc.existing_id, **exc.extra})
             except RequestValidationError:
                 return JSONResponse(status_code=422, content={'message': 'Revisa los datos ingresados y los campos obligatorios.'})
             except ValueError:
@@ -34,7 +35,7 @@ router = APIRouter(prefix='/api/v1', route_class=CaptureRoute)
 
 
 def consultation_key(value):
-    # Existing IDs are preserved verbatim; only the known migration prefix is accepted.
+    # Conserva los IDs históricos y valida el prefijo de migración conocido.
     UUID(value.removeprefix('legacy-consultation-'))
     return value
 
@@ -50,8 +51,10 @@ def field_limits(contract):
     result = {}
     for name, spec in contract.model_json_schema()['properties'].items():
         if 'anyOf' in spec:
-            spec = next((part for part in spec['anyOf'] if part.get('type') != 'null'), {})
-        result[name] = {k: v for k, v in spec.items() if k in {'minimum','maximum','exclusiveMinimum','minLength','maxLength'}}
+            spec = next(
+                (part for part in spec['anyOf'] if part.get('type') != 'null'), {})
+        result[name] = {k: v for k, v in spec.items(
+        ) if k in {'minimum', 'maximum', 'exclusiveMinimum', 'minLength', 'maxLength'}}
     return result
 
 
@@ -93,7 +96,7 @@ async def patient_consultations(patient_id: UUID, request: Request):
 
 @router.post('/patients/{patient_id}/consultations', response_model=ConsultationDetail, status_code=201)
 async def create_consultation(patient_id: UUID, dto: ConsultationCapture, request: Request,
-    idempotency_key: UUID | None = Header(default=None)):
+                              idempotency_key: UUID | None = Header(default=None)):
     return await repo.create_consultation(request.app.state.db, str(patient_id), dto, str(idempotency_key or uuid4()))
 
 
@@ -119,9 +122,7 @@ async def generate_draft(consultation_id: str, request: Request):
 
 @router.post('/consultations/{consultation_id}/generate-draft/start', response_model=GenerationJobStarted)
 async def start_generate_draft(consultation_id: str, request: Request):
-    """Corrección de UX (progreso por etapas real): responde de inmediato con
-    el id de la generación en curso; el frontend hace polling de
-    /generations/{id}/status en vez de esperar bloqueado la respuesta."""
+    """Inicia la generación y devuelve el id para consultar su progreso."""
     generation_id = await diet_plan_generation.start_generation_job(request.app.state.db, consultation_key(consultation_id))
     return GenerationJobStarted(generationId=generation_id)
 

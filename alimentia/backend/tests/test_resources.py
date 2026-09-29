@@ -36,7 +36,8 @@ def _write_bam(path: Path, sheet_name='BAM 18.1.1', header_row=13, columns=None,
 
 
 def _write_manifest(path: Path, sources=None, version='1.0'):
-    path.write_text(json.dumps({'version': version, 'sources': sources or []}), encoding='utf-8')
+    path.write_text(json.dumps(
+        {'version': version, 'sources': sources or []}), encoding='utf-8')
 
 
 class FoodDbTests(unittest.TestCase):
@@ -50,8 +51,8 @@ class FoodDbTests(unittest.TestCase):
                 food_db.reset_food_database_cache()
                 self.assertIsNone(food_db.load_food_database())
                 self.assertEqual(food_db.food_database_status(),
-                                  {'ready': False, 'fileFound': False, 'schemaValid': False,
-                                   'sourceName': None, 'sourceVersion': None, 'publicationYear': None})
+                                 {'ready': False, 'fileFound': False, 'schemaValid': False,
+                                  'sourceName': None, 'sourceVersion': None, 'publicationYear': None})
                 self.assertEqual(food_db.get_exact_macros('pollo'), [])
 
     def test_unreadable_file_is_safe(self):
@@ -98,9 +99,9 @@ class FoodDbTests(unittest.TestCase):
                 self.assertIsNotNone(df)
                 status = food_db.food_database_status()
                 self.assertEqual(status, {'ready': True, 'fileFound': True, 'schemaValid': True,
-                                  'sourceName': food_db.FOOD_SOURCE_NAME,
-                                  'sourceVersion': food_db.FOOD_SOURCE_VERSION,
-                                  'publicationYear': food_db.FOOD_SOURCE_PUBLICATION_YEAR})
+                                          'sourceName': food_db.FOOD_SOURCE_NAME,
+                                          'sourceVersion': food_db.FOOD_SOURCE_VERSION,
+                                          'publicationYear': food_db.FOOD_SOURCE_PUBLICATION_YEAR})
                 macros = food_db.get_exact_macros('pollo')
                 self.assertEqual(len(macros), 1)
                 self.assertEqual(macros[0]['kcal'], 165)
@@ -114,10 +115,10 @@ class RagEngineTests(unittest.TestCase):
             missing = Path(tmp) / 'does-not-exist'
             missing_manifest = Path(tmp) / 'manifest.json'
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': str(missing),
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(missing_manifest)}):
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(missing_manifest)}):
                 status = rag_engine.knowledge_base_status()
                 self.assertEqual(status, {'ready': False, 'documentCount': 0, 'pathConfigured': True,
-                    'knowledgeBaseVersion': None, 'authorizedSourceCount': 0, 'indexedDocumentCount': 0})
+                                          'knowledgeBaseVersion': None, 'authorizedSourceCount': 0, 'indexedDocumentCount': 0})
                 self.assertFalse(missing.exists())
 
     def test_status_empty_folder(self):
@@ -125,18 +126,19 @@ class RagEngineTests(unittest.TestCase):
             manifest_path = Path(tmp) / 'manifest.json'
             _write_manifest(manifest_path, sources=[])
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': tmp,
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
                 status = rag_engine.knowledge_base_status()
                 self.assertEqual(status, {'ready': False, 'documentCount': 0, 'pathConfigured': True,
-                    'knowledgeBaseVersion': '1.0', 'authorizedSourceCount': 0, 'indexedDocumentCount': 0})
+                                          'knowledgeBaseVersion': '1.0', 'authorizedSourceCount': 0, 'indexedDocumentCount': 0})
 
     def test_status_unauthorized_document_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / 'guia.txt').write_text('contenido de prueba')
             manifest_path = Path(tmp) / 'manifest.json'
-            _write_manifest(manifest_path, sources=[])  # nada autorizado todavía
+            # nada autorizado todavía
+            _write_manifest(manifest_path, sources=[])
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': tmp,
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
                 status = rag_engine.knowledge_base_status()
                 self.assertFalse(status['ready'])
                 self.assertEqual(status['documentCount'], 0)
@@ -146,12 +148,12 @@ class RagEngineTests(unittest.TestCase):
             (Path(tmp) / 'guia.txt').write_text('contenido de prueba')
             manifest_path = Path(tmp) / 'manifest.json'
             _write_manifest(manifest_path, sources=[{'id': 'insp-guia-2015', 'name': 'Guía de prueba',
-                'institution': 'INSP', 'version': '2015', 'file': 'guia.txt', 'type': 'GUIDELINE'}])
+                                                     'institution': 'INSP', 'version': '2015', 'file': 'guia.txt', 'type': 'GUIDELINE'}])
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': tmp,
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
                 status = rag_engine.knowledge_base_status()
                 self.assertEqual(status, {'ready': True, 'documentCount': 1, 'pathConfigured': True,
-                    'knowledgeBaseVersion': '1.0', 'authorizedSourceCount': 1, 'indexedDocumentCount': 1})
+                                          'knowledgeBaseVersion': '1.0', 'authorizedSourceCount': 1, 'indexedDocumentCount': 1})
 
     def test_build_knowledge_base_creates_missing_folder_without_raising(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,7 +161,7 @@ class RagEngineTests(unittest.TestCase):
             manifest_path = Path(tmp) / 'manifest.json'
             _write_manifest(manifest_path, sources=[])
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': str(missing),
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
                 result = rag_engine.build_knowledge_base(wait_for_qdrant=False)
                 self.assertEqual(
                     result, {'status': 'no_documents', 'documentCount': 0})
@@ -170,7 +172,7 @@ class RagEngineTests(unittest.TestCase):
             manifest_path = Path(tmp) / 'manifest.json'
             _write_manifest(manifest_path, sources=[])
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': tmp,
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
                 result = rag_engine.build_knowledge_base(wait_for_qdrant=False)
                 self.assertEqual(
                     result, {'status': 'no_documents', 'documentCount': 0})
@@ -181,9 +183,10 @@ class RagEngineTests(unittest.TestCase):
             manifest_path = Path(tmp) / 'manifest.json'
             _write_manifest(manifest_path, sources=[])
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': tmp,
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
                 result = rag_engine.build_knowledge_base(wait_for_qdrant=False)
-                self.assertEqual(result, {'status': 'no_documents', 'documentCount': 0})
+                self.assertEqual(
+                    result, {'status': 'no_documents', 'documentCount': 0})
 
 
 class PyPdfReaderTests(unittest.TestCase):
@@ -222,7 +225,8 @@ class SourceIndexingAdminTests(unittest.TestCase):
         fake_client = MagicMock()
         fake_client.collection_exists.return_value = False
         with patch.object(rag_engine.qdrant_client, 'QdrantClient', return_value=fake_client):
-            self.assertEqual(rag_engine.count_source_chunks('cualquier-fuente'), 0)
+            self.assertEqual(
+                rag_engine.count_source_chunks('cualquier-fuente'), 0)
 
     def test_count_source_chunks_usa_filtro_por_sourceid(self):
         fake_client = MagicMock()
@@ -233,7 +237,8 @@ class SourceIndexingAdminTests(unittest.TestCase):
         self.assertEqual(count, 7)
         kwargs = fake_client.count.call_args.kwargs
         self.assertEqual(kwargs['count_filter'].must[0].key, 'sourceId')
-        self.assertEqual(kwargs['count_filter'].must[0].match.value, 'mi-fuente')
+        self.assertEqual(
+            kwargs['count_filter'].must[0].match.value, 'mi-fuente')
 
     def test_delete_source_chunks_sin_puntos_no_llama_delete(self):
         fake_client = MagicMock()
@@ -253,7 +258,8 @@ class SourceIndexingAdminTests(unittest.TestCase):
         self.assertEqual(deleted, 4)
         fake_client.delete.assert_called_once()
         kwargs = fake_client.delete.call_args.kwargs
-        self.assertEqual(kwargs['points_selector'].must[0].match.value, 'mi-fuente')
+        self.assertEqual(
+            kwargs['points_selector'].must[0].match.value, 'mi-fuente')
 
     def test_delete_source_chunks_propaga_error_real(self):
         """Nunca finge éxito: si Qdrant falla de verdad, el llamador debe enterarse."""
@@ -267,7 +273,8 @@ class SourceIndexingAdminTests(unittest.TestCase):
 
     def test_index_source_documento_ilegible_devuelve_error(self):
         with tempfile.TemporaryDirectory() as tmp:
-            source = {'id': 'fuente-x', 'name': 'Fuente X', 'path': Path(tmp) / 'no-existe.pdf'}
+            source = {'id': 'fuente-x', 'name': 'Fuente X',
+                      'path': Path(tmp) / 'no-existe.pdf'}
             result = rag_engine.index_source(source)
         self.assertEqual(result['status'], 'error')
         self.assertEqual(result['chunkCount'], 0)
@@ -335,6 +342,17 @@ class KnowledgeBaseScopeFilterTests(unittest.TestCase):
             results = service.search('cualquier consulta')
         self.assertEqual(len(results), 1)
 
+    def test_retriever_se_reutiliza_entre_busquedas(self):
+        service = rag_engine.KnowledgeBaseService()
+        nodes = [_FakeNode(
+            metadata={'sourceId': 'nom-043', 'documentName': 'NOM-043'},
+            content='contenido de referencia')]
+        with patch.object(rag_engine, 'HuggingFaceEmbedding', return_value=object()), \
+                patch.object(service, '_retriever', return_value=_FakeRetriever(nodes)) as factory:
+            self.assertEqual(len(service.search('primera consulta')), 1)
+            self.assertEqual(len(service.search('segunda consulta')), 1)
+        factory.assert_called_once()
+
     def test_modelo_de_embeddings_se_reutiliza_en_el_proceso(self):
         previous = rag_engine._embedding_model
         try:
@@ -343,7 +361,8 @@ class KnowledgeBaseScopeFilterTests(unittest.TestCase):
                 first = rag_engine.get_embedding_model()
                 second = rag_engine.get_embedding_model()
             self.assertIs(first, second)
-            factory.assert_called_once_with(model_name=rag_engine.EMBEDDING_MODEL_NAME)
+            factory.assert_called_once_with(
+                model_name=rag_engine.EMBEDDING_MODEL_NAME)
         finally:
             rag_engine._embedding_model = previous
 
@@ -374,13 +393,13 @@ class ResourcesEndpointTests(unittest.IsolatedAsyncioTestCase):
             missing_bam = Path(tmp) / 'BAM.xlsx'
             missing_manifest = Path(tmp) / 'manifest.json'
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': str(missing_pdfs),
-                                            'ALIMENTIA_FOOD_DB_PATH': str(missing_bam),
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(missing_manifest)}):
+                                           'ALIMENTIA_FOOD_DB_PATH': str(missing_bam),
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(missing_manifest)}):
                 response = await self.client.get('resources/status')
                 self.assertEqual(response.status_code, 200)
                 body = response.json()
                 self.assertEqual(body['knowledgeBase'], {'ready': False, 'documentCount': 0, 'pathConfigured': True,
-                    'knowledgeBaseVersion': None, 'authorizedSourceCount': 0, 'indexedDocumentCount': 0})
+                                                         'knowledgeBaseVersion': None, 'authorizedSourceCount': 0, 'indexedDocumentCount': 0})
                 self.assertEqual(body['foodDatabase'], {
                     'ready': False, 'fileFound': False, 'schemaValid': False,
                     'sourceName': None, 'sourceVersion': None, 'publicationYear': None})
@@ -394,18 +413,20 @@ class ResourcesEndpointTests(unittest.IsolatedAsyncioTestCase):
             (pdfs_dir / 'guia.txt').write_text('contenido')
             manifest_path = Path(tmp) / 'manifest.json'
             _write_manifest(manifest_path, sources=[{'id': 'insp-guia-2015', 'name': 'Guía de prueba',
-                'institution': 'INSP', 'version': '2015', 'file': 'guia.txt', 'type': 'GUIDELINE'}])
+                                                     'institution': 'INSP', 'version': '2015', 'file': 'guia.txt', 'type': 'GUIDELINE'}])
             bam_path = Path(tmp) / 'BAM.xlsx'
             _write_bam(bam_path)
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': str(pdfs_dir),
-                                            'ALIMENTIA_FOOD_DB_PATH': str(bam_path),
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
+                                           'ALIMENTIA_FOOD_DB_PATH': str(bam_path),
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
                 await sync_knowledge_sources(self.db, pdfs_dir)
                 response = await self.client.get('resources/status')
                 body = response.json()
                 self.assertTrue(body['knowledgeBase']['ready'])
-                self.assertEqual(body['knowledgeBase']['knowledgeBaseVersion'], '1.0')
-                self.assertEqual(body['knowledgeBase']['indexedDocumentCount'], 1)
+                self.assertEqual(body['knowledgeBase']
+                                 ['knowledgeBaseVersion'], '1.0')
+                self.assertEqual(body['knowledgeBase']
+                                 ['indexedDocumentCount'], 1)
                 self.assertTrue(body['foodDatabase']['ready'])
 
     async def test_resources_status_incluye_motor_de_calculo_y_llm(self):
@@ -413,7 +434,8 @@ class ResourcesEndpointTests(unittest.IsolatedAsyncioTestCase):
         llamar realmente al proveedor LLM."""
         response = await self.client.get('resources/status')
         body = response.json()
-        self.assertEqual(body['calculationEngine'], {'ready': True, 'rulesetVersion': '1.0'})
+        self.assertEqual(body['calculationEngine'], {
+                         'ready': True, 'rulesetVersion': '1.0'})
         self.assertTrue(body['llm']['configured'])
         self.assertIsInstance(body['llm']['modelName'], str)
         self.assertTrue(body['llm']['modelName'])
@@ -424,7 +446,7 @@ class ResourcesEndpointTests(unittest.IsolatedAsyncioTestCase):
             manifest_path = Path(tmp) / 'manifest.json'
             _write_manifest(manifest_path, sources=[])
             with patch.dict('os.environ', {'ALIMENTIA_KNOWLEDGE_PATH': str(missing_pdfs),
-                                            'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
+                                           'ALIMENTIA_KNOWLEDGE_MANIFEST_PATH': str(manifest_path)}):
                 response = await self.client.post('ingest-pdfs')
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()['documentCount'], 0)

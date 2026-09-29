@@ -1,8 +1,19 @@
 export type Sex = "female" | "male";
-export type ActivityLevel = "sedentary" | "light" | "moderate" | "active" | "very active";
+export type ActivityLevel =
+  | "sedentary"
+  | "light"
+  | "moderate"
+  | "active"
+  | "very active";
 export type Goal = "WEIGHT_LOSS" | "MAINTENANCE" | "WEIGHT_GAIN";
 export type ConsultationStatus = "DRAFT" | "READY";
-export type PlanStatus = "DRAFT" | "UNDER_REVIEW" | "MODIFIED" | "REGENERATED" | "REJECTED" | "APPROVED";
+export type PlanStatus =
+  | "DRAFT"
+  | "UNDER_REVIEW"
+  | "MODIFIED"
+  | "REGENERATED"
+  | "REJECTED"
+  | "APPROVED";
 
 export interface PatientCreate {
   name: string;
@@ -20,9 +31,18 @@ export interface PatientCreate {
   allergiesOrIntolerances?: string | null;
   notes?: string | null;
 }
-export type PatientUpdate = Partial<PatientCreate> & { expectedUpdatedAt?: string };
-export interface PlanSummary { id: string; version: number; status: PlanStatus }
-export interface Patient extends Omit<PatientCreate, "defaultGoal" | "defaultActivityLevel"> {
+export type PatientUpdate = Partial<PatientCreate> & {
+  expectedUpdatedAt?: string;
+};
+export interface PlanSummary {
+  id: string;
+  version: number;
+  status: PlanStatus;
+}
+export interface Patient extends Omit<
+  PatientCreate,
+  "defaultGoal" | "defaultActivityLevel"
+> {
   id: string;
   createdAt: string;
   updatedAt: string;
@@ -42,6 +62,12 @@ export interface ConsultationCreate {
   heightM?: number | null;
   activityLevel?: ActivityLevel | null;
   goal?: Goal | null;
+  targetCaloriesOverride?: number | null;
+  proteinGramsOverride?: number | null;
+  carbohydrateGramsOverride?: number | null;
+  fatGramsOverride?: number | null;
+  fiberGramsOverride?: number | null;
+  waterLitersOverride?: number | null;
   mealsPerDay?: number | null;
   dailyBudget?: number | null;
   budgetMin?: number | null;
@@ -53,8 +79,13 @@ export interface ConsultationCreate {
   requiresProfessionalReview?: boolean;
   status?: ConsultationStatus;
 }
-export type ConsultationUpdate = ConsultationCreate & { expectedUpdatedAt?: string };
-export interface Consultation extends Omit<Required<ConsultationCreate>, "goal" | "activityLevel" | "sex"> {
+export type ConsultationUpdate = ConsultationCreate & {
+  expectedUpdatedAt?: string;
+};
+export interface Consultation extends Omit<
+  Required<ConsultationCreate>,
+  "goal" | "activityLevel" | "sex"
+> {
   id: string;
   patientId: string;
   createdAt: string;
@@ -63,6 +94,12 @@ export interface Consultation extends Omit<Required<ConsultationCreate>, "goal" 
   sex: string | null;
   goal: string | null;
   activityLevel: string | null;
+  targetCaloriesOverride: number | null;
+  proteinGramsOverride: number | null;
+  carbohydrateGramsOverride: number | null;
+  fatGramsOverride: number | null;
+  fiberGramsOverride: number | null;
+  waterLitersOverride: number | null;
   isEditable: boolean;
   readinessIssues: string[];
   scopeWarning: string | null;
@@ -81,8 +118,17 @@ export interface Consultation extends Omit<Required<ConsultationCreate>, "goal" 
   fiberGrams: number | null;
   waterLiters: number | null;
 }
-export interface Option<T extends string = string> { value: T; label: string }
-export interface FieldLimits { minimum?: number; maximum?: number; exclusiveMinimum?: number; minLength?: number; maxLength?: number }
+export interface Option<T extends string = string> {
+  value: T;
+  label: string;
+}
+export interface FieldLimits {
+  minimum?: number;
+  maximum?: number;
+  exclusiveMinimum?: number;
+  minLength?: number;
+  maxLength?: number;
+}
 export interface CaptureOptions {
   scopeWarning: string;
   sex: Option<Sex>[];
@@ -91,7 +137,11 @@ export interface CaptureOptions {
   patientLimits: Record<string, FieldLimits>;
   consultationLimits: Record<string, FieldLimits>;
 }
-export type SourceType = "GUIDELINE" | "REFERENCE_TABLE" | "REGULATION" | "OTHER";
+export type SourceType =
+  | "GUIDELINE"
+  | "REFERENCE_TABLE"
+  | "REGULATION"
+  | "OTHER";
 // Administración de documentos: estado real de indexación en Qdrant (nunca
 // se muestra "Vigente" solo porque existe la fila en KnowledgeSource).
 export type IndexStatus = "INDEXING" | "INDEXED" | "ERROR";
@@ -197,6 +247,16 @@ export interface DietPlanDetail extends DietPlan {
   promptVersion: string | null;
   knowledgeBaseVersion: string | null;
 }
+export interface DietPlanIndexItem {
+  id: string;
+  consultationId: string;
+  patientName: string;
+  version: number;
+  status: PlanStatus;
+  totalCalories: number | null;
+  targetCalories: number | null;
+  generatedAt: string;
+}
 export interface DietPlanFoodEdit {
   foodName: string;
   quantity: number;
@@ -233,9 +293,16 @@ export interface DietPlanGenerationResult {
 // exactamente los estados que puede reportar el backend, nunca una
 // animación o temporizador ficticio del lado del cliente.
 export type GenerationStage =
-  | "VALIDATING" | "LOADING_CALCULATIONS" | "LOADING_FOOD_DATA" | "SEARCHING_KNOWLEDGE"
-  | "BUILDING_CONTEXT" | "GENERATING_WITH_LLM" | "VALIDATING_RESPONSE" | "PERSISTING"
-  | "COMPLETED" | "FAILED";
+  | "VALIDATING"
+  | "LOADING_CALCULATIONS"
+  | "LOADING_FOOD_DATA"
+  | "SEARCHING_KNOWLEDGE"
+  | "BUILDING_CONTEXT"
+  | "GENERATING_WITH_LLM"
+  | "VALIDATING_RESPONSE"
+  | "PERSISTING"
+  | "COMPLETED"
+  | "FAILED";
 export type GenerationJobStatus = "IN_PROGRESS" | "SUCCESS" | "FAILED";
 export interface GenerationJobStarted {
   generationId: string;
@@ -286,21 +353,46 @@ export interface DashboardSummary {
 }
 export interface PlanTraceability {
   plan: { id: string; version: number; status: string };
-  calculation: { calculationId: string | null; method: string | null; rulesetVersion: string | null; recordedAt: string | null };
+  calculation: {
+    calculationId: string | null;
+    method: string | null;
+    rulesetVersion: string | null;
+    recordedAt: string | null;
+  };
   generation: {
-    generationId: string | null; modelProvider: string | null; modelName: string | null;
-    promptVersion: string | null; generationDurationMs: number | null; knowledgeBaseVersion: string | null;
+    generationId: string | null;
+    modelProvider: string | null;
+    modelName: string | null;
+    promptVersion: string | null;
+    generationDurationMs: number | null;
+    knowledgeBaseVersion: string | null;
   };
   resources: {
-    foodDatabaseUsed: boolean | null; foodDatabaseName: string | null;
-    foodDatabaseVersion: string | null; knowledgeBaseUsed: boolean | null;
+    foodDatabaseUsed: boolean | null;
+    foodDatabaseName: string | null;
+    foodDatabaseVersion: string | null;
+    knowledgeBaseUsed: boolean | null;
   };
-  sources: { sourceId: string; name: string; version: string | null; document: string | null }[];
+  sources: {
+    sourceId: string;
+    name: string;
+    version: string | null;
+    document: string | null;
+  }[];
   humanReview: {
-    manualEditCount: number; regenerationCount: number;
-    approvedAt: string | null; approvedBy: string | null; rejectedAt: string | null; rejectedBy: string | null;
+    manualEditCount: number;
+    regenerationCount: number;
+    approvedAt: string | null;
+    approvedBy: string | null;
+    rejectedAt: string | null;
+    rejectedBy: string | null;
   };
-  validations: { code: string; severity: ValidationSeverity; isBlocking: boolean; message: string }[];
+  validations: {
+    code: string;
+    severity: ValidationSeverity;
+    isBlocking: boolean;
+    message: string;
+  }[];
 }
 export interface EvaluationMetrics {
   consultationId: string;
@@ -333,19 +425,31 @@ export interface AssistantNavigationContext {
   consultationId?: string | null;
   planId?: string | null;
 }
-export interface AssistantConversationTurn { role: "user" | "assistant"; content: string }
+export interface AssistantConversationTurn {
+  role: "user" | "assistant";
+  content: string;
+}
 export interface AssistantChatRequest {
   message: string;
   context?: AssistantNavigationContext;
   conversation?: AssistantConversationTurn[];
 }
-export interface AssistantSourceCitation { sourceId: string; documentName: string; institution: string | null }
+export interface AssistantSourceCitation {
+  sourceId: string;
+  documentName: string;
+  institution: string | null;
+}
 export interface AssistantChatResponse {
   answer: string;
   toolsUsed: string[];
   sources: AssistantSourceCitation[];
   structuredData: Record<string, unknown> | null;
-  metadata: { model: string; promptVersion: string; executionTimeMs: number; toolIterations: number };
+  metadata: {
+    model: string;
+    promptVersion: string;
+    executionTimeMs: number;
+    toolIterations: number;
+  };
 }
 export interface LegacyPlan {
   id: string;

@@ -63,6 +63,16 @@ const dangerSolidButton =
 const inputClass =
   "w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 placeholder:text-slate-500 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500";
 
+function generationDurationLabel(milliseconds: number | null): string {
+  if (milliseconds == null) return "—";
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  const totalSeconds = Math.round(milliseconds / 1000);
+  if (totalSeconds < 60) return `${totalSeconds} s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes} min ${seconds} s`;
+}
+
 function toEditMeals(plan: DietPlanDetail): DietPlanMealEdit[] {
   return plan.meals.map((meal) => ({
     mealType: meal.mealType,
@@ -617,7 +627,7 @@ export function DietPlanDraft({
                 </div>
               ) : null}
 
-              <ExportAndTraceability plan={current} />
+              <ExportAndTraceability key={current.id} plan={current} />
 
               {showApproveConfirm ? (
                 <ConfirmApprove
@@ -938,7 +948,8 @@ function ExportAndTraceability({ plan }: { plan: DietPlanDetail }) {
               {trace.generation.modelProvider ?? "—"}/
               {trace.generation.modelName ?? "—"} · prompt{" "}
               {trace.generation.promptVersion ?? "—"} · KB{" "}
-              {trace.generation.knowledgeBaseVersion ?? "—"}
+              {trace.generation.knowledgeBaseVersion ?? "—"} · duración{" "}
+              {generationDurationLabel(trace.generation.generationDurationMs)}
             </p>
             <p>
               <span className="font-semibold">Recursos:</span> BAM{" "}

@@ -55,7 +55,8 @@ class PlanManagementTestBase(unittest.IsolatedAsyncioTestCase):
         self.app.state.db = self.db
         self.app.include_router(capture_router)
         self.app.include_router(plans_router)
-        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://test/api/v1/')
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(
+            app=self.app), base_url='http://test/api/v1/')
 
     async def asyncTearDown(self):
         await self.client.aclose()
@@ -70,7 +71,7 @@ class PlanManagementTestBase(unittest.IsolatedAsyncioTestCase):
     async def consultation(self, patient=None, **changes):
         patient = patient or await self.patient()
         payload = {'ageAtConsultation': 28, 'sex': 'female', 'weightKg': 68, 'heightM': 1.65,
-            'activityLevel': 'moderate', 'goal': 'WEIGHT_LOSS', 'mealsPerDay': 1, **changes}
+                   'activityLevel': 'moderate', 'goal': 'WEIGHT_LOSS', 'mealsPerDay': 1, **changes}
         response = await self.client.post(f"patients/{patient['id']}/consultations", json=payload)
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
@@ -84,13 +85,29 @@ class PlanManagementTestBase(unittest.IsolatedAsyncioTestCase):
     async def draft_plan(self, target_calories=None, **consultation_changes):
         """Consulta calculada + un DietPlan v1 en DRAFT vía LLM mockeado."""
         consultation = await self.calculated_consultation(**consultation_changes)
-        calories = target_calories if target_calories is not None else consultation['targetCalories']
+        calories = target_calories if target_calories is not None else consultation[
+            'targetCalories']
         result = await diet_plan_generation.generate_draft(self.db, consultation['id'],
-            llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1, calories_each=calories)))
+                                                           llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1, calories_each=calories)))
         return consultation, result
 
 
 class PlanRetrievalTests(PlanManagementTestBase):
+    async def test_plan_index_devuelve_resumen_en_una_consulta_http(self):
+        consultation, result = await self.draft_plan()
+
+        response = await self.client.get('plan-index')
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(response.json()), 1)
+        item = response.json()[0]
+        self.assertEqual(item['id'], result.dietPlanId)
+        self.assertEqual(item['consultationId'], consultation['id'])
+        self.assertEqual(item['patientName'], 'Test patient')
+        self.assertEqual(item['status'], 'DRAFT')
+        self.assertIsNotNone(item['totalCalories'])
+        self.assertIsNotNone(item['generatedAt'])
+
     async def test_get_plan_inexistente_404(self):
         response = await self.client.get(f'plans/{uuid4()}')
         self.assertEqual(response.status_code, 404)
@@ -102,7 +119,8 @@ class PlanRetrievalTests(PlanManagementTestBase):
         body = response.json()
         self.assertEqual(body['status'], 'DRAFT')
         self.assertEqual(body['version'], 1)
-        self.assertEqual(body['targetCalories'], consultation['targetCalories'])
+        self.assertEqual(body['targetCalories'],
+                         consultation['targetCalories'])
         self.assertTrue(body['isEditable'])
         self.assertEqual(body['modelProvider'], 'fake')
         self.assertIn('validations', body)
@@ -127,10 +145,10 @@ class PlanEditTests(PlanManagementTestBase):
         plan = await self.client.get(f"plans/{result.dietPlanId}")
         meal = plan.json()['meals'][0]
         edit = {'meals': [{'mealType': meal['mealType'], 'name': 'Nombre editado',
-            'foods': [{'foodName': f['foodName'], 'quantity': f['quantity'], 'unit': f['unit'],
-                       'calories': f['calories'], 'protein': f['protein'],
-                       'carbohydrates': f['carbohydrates'], 'fat': f['fat']} for f in meal['foods']]}],
-            'actor': 'dra-prueba'}
+                           'foods': [{'foodName': f['foodName'], 'quantity': f['quantity'], 'unit': f['unit'],
+                                      'calories': f['calories'], 'protein': f['protein'],
+                                      'carbohydrates': f['carbohydrates'], 'fat': f['fat']} for f in meal['foods']]}],
+                'actor': 'dra-prueba'}
         response = await self.client.patch(f"plans/{result.dietPlanId}", json=edit)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['meals'][0]['name'], 'Nombre editado')
@@ -150,8 +168,10 @@ class PlanEditTests(PlanManagementTestBase):
     async def test_agregar_y_eliminar_alimentos(self):
         _consultation, result = await self.draft_plan()
         edit = {'meals': [{'mealType': 'Comida 1', 'name': 'Comida 1', 'foods': [
-            {'foodName': 'Alimento nuevo A', 'quantity': 1, 'unit': 'pieza', 'calories': 300},
-            {'foodName': 'Alimento nuevo B', 'quantity': 1, 'unit': 'pieza', 'calories': 400},
+            {'foodName': 'Alimento nuevo A', 'quantity': 1,
+                'unit': 'pieza', 'calories': 300},
+            {'foodName': 'Alimento nuevo B', 'quantity': 1,
+                'unit': 'pieza', 'calories': 400},
         ]}]}
         response = await self.client.patch(f"plans/{result.dietPlanId}", json=edit)
         self.assertEqual(response.status_code, 200, response.text)
@@ -181,7 +201,8 @@ class PlanEditTests(PlanManagementTestBase):
         self.assertEqual(response.status_code, 200, response.text)
         changes = await self.db.dietplanchangelog.find_many(where={'dietPlanId': result.dietPlanId})
         self.assertTrue(any(c.changeType == 'MANUAL_EDIT' for c in changes))
-        self.assertTrue(all(c.changedBy == 'dra-lopez' for c in changes if c.changeType == 'MANUAL_EDIT'))
+        self.assertTrue(
+            all(c.changedBy == 'dra-lopez' for c in changes if c.changeType == 'MANUAL_EDIT'))
         name_change = next(c for c in changes if c.field == 'meals[0].name')
         self.assertEqual(name_change.previousValue, 'Comida 1')
         self.assertEqual(name_change.newValue, 'Nombre nuevo')
@@ -247,7 +268,8 @@ class PlanApprovalTests(PlanManagementTestBase):
         response = await self.client.post(f"plans/{result.dietPlanId}/approve", json={})
         self.assertEqual(response.status_code, 409)
         after = await self.db.planvalidation.find_many(where={'dietPlanId': result.dietPlanId})
-        self.assertTrue(any(v.code == 'MEAL_COUNT_MISMATCH' and v.isBlocking for v in after))
+        self.assertTrue(
+            any(v.code == 'MEAL_COUNT_MISMATCH' and v.isBlocking for v in after))
         # La revalidación reemplazó el juego de validaciones (no simplemente lo dejó como estaba).
         self.assertNotEqual({v.id for v in before}, {v.id for v in after})
 
@@ -260,7 +282,8 @@ class PlanApprovalTests(PlanManagementTestBase):
         body = response.json()
         self.assertIn('blockingValidations', body)
         self.assertTrue(len(body['blockingValidations']) > 0)
-        self.assertTrue(any(v['code'] == 'MEAL_COUNT_MISMATCH' for v in body['blockingValidations']))
+        self.assertTrue(
+            any(v['code'] == 'MEAL_COUNT_MISMATCH' for v in body['blockingValidations']))
 
     async def test_aprobar_plan_inexistente_404(self):
         response = await self.client.post(f'plans/{uuid4()}/approve', json={})
@@ -323,12 +346,13 @@ class PlanRejectionTests(PlanManagementTestBase):
     async def test_rechazar_plan_valido(self):
         _consultation, result = await self.draft_plan(mealsPerDay=1)
         response = await self.client.post(f"plans/{result.dietPlanId}/reject",
-            json={'reason': 'No respeta las preferencias del paciente.', 'actor': 'dra-lopez'})
+                                          json={'reason': 'No respeta las preferencias del paciente.', 'actor': 'dra-lopez'})
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body['status'], 'REJECTED')
         self.assertEqual(body['rejectedBy'], 'dra-lopez')
-        self.assertEqual(body['rejectionReason'], 'No respeta las preferencias del paciente.')
+        self.assertEqual(body['rejectionReason'],
+                         'No respeta las preferencias del paciente.')
         changes = await self.db.dietplanchangelog.find_many(where={'dietPlanId': result.dietPlanId})
         self.assertTrue(any(c.changeType == 'REJECTION' for c in changes))
 
@@ -348,7 +372,7 @@ class PlanRegenerationTests(PlanManagementTestBase):
     async def test_regenerar_crea_v2_y_conserva_v1(self):
         consultation, result = await self.draft_plan(mealsPerDay=1)
         second = await pm.regenerate_plan(self.db, result.dietPlanId,
-            _regen_dto(), llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
+                                          _regen_dto(), llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
         self.assertEqual(second.version, 2)
         self.assertNotEqual(second.dietPlanId, result.dietPlanId)
         v1 = await self.client.get(f"plans/{result.dietPlanId}")
@@ -358,10 +382,12 @@ class PlanRegenerationTests(PlanManagementTestBase):
     async def test_regenerar_registra_solicitud_en_auditoria_del_plan_anterior(self):
         _consultation, result = await self.draft_plan(mealsPerDay=1)
         await pm.regenerate_plan(self.db, result.dietPlanId,
-            _regen_dto(instructions='Evitar lácteos', actor='dra-lopez'),
-            llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
+                                 _regen_dto(
+                                     instructions='Evitar lácteos', actor='dra-lopez'),
+                                 llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
         changes = await self.db.dietplanchangelog.find_many(where={'dietPlanId': result.dietPlanId})
-        entry = next(c for c in changes if c.changeType == 'REGENERATION_REQUESTED')
+        entry = next(c for c in changes if c.changeType ==
+                     'REGENERATION_REQUESTED')
         self.assertEqual(entry.changedBy, 'dra-lopez')
         self.assertEqual(entry.previousValue, '1')
         self.assertEqual(entry.newValue, '2')
@@ -370,16 +396,19 @@ class PlanRegenerationTests(PlanManagementTestBase):
         consultation, result = await self.draft_plan(mealsPerDay=1)
         fake_client = FakeLLMClient(plan=_plan_json(meals_per_day=1))
         await pm.regenerate_plan(self.db, result.dietPlanId,
-            _regen_dto(instructions='Usar preparaciones más sencillas'), llm_client=fake_client)
-        self.assertIn(f"Target energy: {consultation['targetCalories']} kcal", fake_client.last_user_prompt)
-        self.assertIn('Usar preparaciones más sencillas', fake_client.last_user_prompt)
-        self.assertIn('son datos del usuario, NO', fake_client.last_user_prompt)
+                                 _regen_dto(instructions='Usar preparaciones más sencillas'), llm_client=fake_client)
+        self.assertIn(
+            f"Target energy: {consultation['targetCalories']} kcal", fake_client.last_user_prompt)
+        self.assertIn('Usar preparaciones más sencillas',
+                      fake_client.last_user_prompt)
+        self.assertIn('son datos del usuario, NO',
+                      fake_client.last_user_prompt)
 
     async def test_regenerar_desde_rechazado_es_valido(self):
         _consultation, result = await self.draft_plan(mealsPerDay=1)
         await self.client.post(f"plans/{result.dietPlanId}/reject", json={'reason': 'motivo'})
         second = await pm.regenerate_plan(self.db, result.dietPlanId,
-            _regen_dto(), llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
+                                          _regen_dto(), llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
         self.assertEqual(second.version, 2)
         self.assertEqual(second.status, 'SUCCESS')
 
@@ -390,9 +419,9 @@ class PlanRegenerationTests(PlanManagementTestBase):
     async def test_version_nunca_se_reutiliza_tras_multiples_regeneraciones(self):
         consultation, result = await self.draft_plan(mealsPerDay=1)
         v2 = await pm.regenerate_plan(self.db, result.dietPlanId, _regen_dto(),
-            llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
+                                      llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
         v3 = await pm.regenerate_plan(self.db, v2.dietPlanId, _regen_dto(),
-            llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
+                                      llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
         versions = sorted(p.version for p in await self.db.dietplan.find_many(
             where={'consultationId': consultation['id']}))
         self.assertEqual(versions, [1, 2, 3])
@@ -411,7 +440,7 @@ class DataIntegrityTests(PlanManagementTestBase):
             {'foodName': 'A', 'quantity': 1, 'unit': 'g', 'calories': 100}]}]}
         await self.client.patch(f"plans/{result.dietPlanId}", json=edit)
         await pm.regenerate_plan(self.db, result.dietPlanId, _regen_dto(),
-            llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
+                                 llm_client=FakeLLMClient(plan=_plan_json(meals_per_day=1)))
         self.assertEqual(await self.db.patient.count(), 1)
         self.assertEqual(await self.db.nutritionconsultation.count(), 1)
 

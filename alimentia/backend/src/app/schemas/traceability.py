@@ -1,7 +1,6 @@
-"""Contratos de trazabilidad completa del plan (Fase 6, Parte B).
+"""Contratos de trazabilidad del plan.
 
-Nunca exponen prompts completos, secrets, API keys, rutas internas ni PII no
-pertinente: solo identificadores técnicos y metadatos de procedencia.
+Exponen identificadores técnicos y procedencia, no prompts ni secretos.
 """
 from datetime import datetime
 

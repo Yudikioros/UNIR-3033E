@@ -1,23 +1,11 @@
-"""
-Generación estructurada de borradores de plan dietético con LLM (Fase 4).
+"""Genera y persiste borradores estructurados para revisión profesional.
 
-Flujo obligatorio:
-
-    NutritionConsultation
-        -> resultados determinísticos de Fase 3 (fuente de verdad)
-        -> FoodDatabaseService (si está disponible)
-        -> KnowledgeBaseService / RAG (si existen fuentes autorizadas)
-        -> contexto anonimizado
-        -> LLM (organiza y propone; nunca calcula, nunca aprueba)
-        -> validación estructural (Pydantic)
-        -> validaciones deterministas
-        -> persistencia (DietPlan DRAFT, nunca sobrescribe historial)
-
-El LLM jamás decide la lista de fuentes citadas al usuario: esas siempre se
-reconstruyen desde `RetrievedKnowledgeChunk` -> `KnowledgeSource` reales.
+Usa cálculos existentes, recursos disponibles y contexto anonimizado. El LLM
+propone el contenido; las validaciones y la procedencia se resuelven fuera del modelo.
 """
 import asyncio
 import json
+import logging
 import os
 import time
 from enum import StrEnum
@@ -39,13 +27,12 @@ from app.services.food_db import _strip_accents, get_food_database_service
 from app.services.knowledge_manifest import knowledge_base_version
 from app.services.llm_client import LLMClient, LLMGenerationError
 
-DIET_PLAN_PROMPT_VERSION = "1.1"
+DIET_PLAN_PROMPT_VERSION = "1.2"
+logger = logging.getLogger("uvicorn.error")
 
 
 class GenerationStage(StrEnum):
-    """Etapas reales del pipeline de generación (corrección de UX de
-    progreso). Cada valor corresponde a trabajo que el backend ya hacía;
-    ninguna etapa se inventa ni se simula con temporizadores."""
+    """Etapas de trabajo reportadas durante la generación."""
     VALIDATING = "VALIDATING"
     LOADING_CALCULATIONS = "LOADING_CALCULATIONS"
     LOADING_FOOD_DATA = "LOADING_FOOD_DATA"
@@ -58,9 +45,7 @@ class GenerationStage(StrEnum):
     FAILED = "FAILED"
 
 
-# Referencias fuertes a las tareas en segundo plano: asyncio no garantiza que
-# una Task sobreviva si nada la referencia (puede recolectarse a mitad de
-# ejecución). Se libera sola vía el callback cuando termina.
+# Conserva referencias a tareas activas hasta que terminan.
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
@@ -71,18 +56,26 @@ def spawn_background(coro) -> asyncio.Task:
     return task
 
 
-# Unidades escalables desde el valor por 100 g de BAM. Cualquier otra unidad
-# ("taza", "pieza"...) no se reescala: el alimento queda sin verificar en vez
-# de inventar una conversión.
+# Solo se escalan cantidades expresadas en gramos; otras unidades quedan sin verificar.
 GRAM_UNITS = {"g", "gr", "gramo", "gramos"}
 RAG_TOP_K = int(os.getenv("ALIMENTIA_RAG_TOP_K", "3"))
+# Consultas base para aportar variedad cuando no hay preferencias declaradas.
+DEFAULT_FOOD_QUERIES = (
+    "AVENA (HOJUELAS)", "POLLO, PECHUGA SIN PIEL",
+    "ARROZ COCIDO, PREPARACION ESTANDARIZADA", "HUEVO DURO",
+    "FRIJOL HERVIDO SIN SAL", "TORTILLA, DE MASA DE MAIZ BLANCO (NO FORTIFICADO)",
+    "PLATANO TABASCO", "AGUACATE (PROMEDIO)",
+    "PESCADO", "YOGUR", "QUESO PANELA", "LECHE DESCREMADA",
+    "CARNE DE RES", "LENTEJA", "GARBANZO", "PAPA",
+    "PAN INTEGRAL", "NUEZ", "ALMENDRA", "CHIA",
+    "BROCOLI", "ESPINACA", "JITOMATE", "ZANAHORIA",
+    "MANZANA", "FRESA", "PAPAYA", "NARANJA",
+)
 VALIDATION_SOURCE = "diet_plan_generation"
 MAX_INSTRUCTIONS_LENGTH = 500
-try:
-    NUTRITION_RETRY_COUNT = min(
-        max(int(os.getenv("ALIMENTIA_NUTRITION_RETRY_COUNT", "2")), 0), 3)
-except ValueError:
-    NUTRITION_RETRY_COUNT = 2
+BAM_SAMPLE_SIZE = int(os.getenv("ALIMENTIA_BAM_SAMPLE_SIZE", "8"))
+# Limita los reintentos porque cada uno ejecuta una generación completa.
+NUTRITION_RETRY_COUNT = 1
 CALCULATION_REQUIRED_MESSAGE = "Los requerimientos nutricionales deben calcularse antes de generar el borrador."
 PROVIDER_FAILURE_MESSAGE = "No fue posible generar el borrador. Intenta nuevamente."
 
@@ -91,10 +84,11 @@ DIET_PLAN_SYSTEM_PROMPT = """Eres un asistente que prepara un BORRADOR de plan a
 REGLAS DURAS, EN ESTE ORDEN:
 1. Seguridad: nunca incluyas alimentos de la lista de restricciones o alergias/intolerancias, ni variantes obvias de esos alimentos.
 2. Cantidad: devuelve exactamente el número de comidas solicitado; cada comida debe tener al menos un alimento.
-3. Objetivos: ajusta cantidades y selección para que la suma de todos los alimentos quede dentro de ±5% de las calorías objetivo y ±10% de proteína, carbohidratos y grasa. Los objetivos son la fuente de verdad; no los recalcules ni los cambies. No debes Recalcular los requerimientos.
+3. Objetivos: ajusta cantidades y selección para que la suma de todos los alimentos quede dentro de ±5% de las calorías objetivo, proteína, carbohidratos y grasa. Los objetivos son la fuente de verdad; no los recalcules ni los cambies. No debes Recalcular los requerimientos.
 4. Coherencia: cada alimento debe tener nutrientes compatibles con su cantidad y unidad. No escribas calorías o macros arbitrarios para hacer cuadrar el total.
 5. Preferencias: respeta preferencias, presupuesto y notas siempre que no contradigan una regla dura.
 6. Procedencia: usa los datos alimentarios verificados proporcionados; si no están disponibles, no afirmes que usaste BAM o SMAE ni inventes equivalencias.
+7. Variedad: no repitas el mismo platillo (misma combinación de alimentos) en más de una comida del día; usa alimentos distintos entre comidas siempre que el catálogo disponible lo permita.
 
 AUTOVERIFICACIÓN OBLIGATORIA ANTES DE RESPONDER:
 - Cuenta las comidas y comprueba que coincide con el número solicitado.
@@ -125,6 +119,37 @@ def _build_context(consultation, projected) -> DietPlanGenerationContext:
         carbohydrateGrams=projected.carbohydrateGrams, fatGrams=projected.fatGrams,
         fiberGrams=projected.fiberGrams, waterLiters=projected.waterLiters,
     )
+
+
+def _verified_foods_for_prompt(food_service, preferences: list[str]) -> list:
+    """Obtiene alimentos y nutrientes verificados para incluir en el contexto."""
+    foods = []
+    seen_ids = set()
+
+    def _add(food):
+        food_id = getattr(food, "id", food.name)
+        if food_id not in seen_ids:
+            seen_ids.add(food_id)
+            foods.append(food)
+
+    if preferences:
+        for query in preferences[:5]:
+            for food in food_service.search(query, limit=2):
+                _add(food)
+        return foods
+
+    for query in DEFAULT_FOOD_QUERIES:
+        for food in food_service.search(query, limit=1):
+            _add(food)
+    random_added = 0
+    for food in food_service.sample(BAM_SAMPLE_SIZE + len(seen_ids)):
+        previous_count = len(foods)
+        _add(food)
+        if len(foods) > previous_count:
+            random_added += 1
+        if random_added >= BAM_SAMPLE_SIZE:
+            break
+    return foods
 
 
 def _regeneration_feedback(context: DietPlanGenerationContext, previous_plan) -> str:
@@ -202,9 +227,14 @@ def build_prompt(context: DietPlanGenerationContext, verified_foods, chunks, foo
     food_block = ("Base alimentaria estructurada no disponible todavía. No afirmes que las cantidades "
                   "provienen de BAM/SMAE ni inventes equivalencias.")
     if food_available and verified_foods:
-        food_block = "Datos verificados de la base alimentaria (usa estos valores si incluyes estos alimentos, por 100 g):\n" + "\n".join(
-            f"- {food.name}: {food.energyKcal} kcal, proteína {food.proteinG} g, grasa {food.fatG} g, carbohidratos {food.carbohydratesG} g"
-            for food in verified_foods)
+        food_block = ("Datos verificados de la base alimentaria (por 100 g), con el nombre exacto y "
+                      "nutrientes calculados proporcionalmente a la cantidad. Prioriza estos alimentos, pero "
+                      "si no bastan para alcanzar las calorías y macros objetivo dentro de tolerancia, agrega "
+                      "otros alimentos comunes en vez de forzar cantidades irreales de los verificados. Cada "
+                      "food.unit debe ser exactamente \"g\"; no uses piezas, tazas, cucharadas ni otras "
+                      "unidades:\n" + "\n".join(
+                          f"- {food.name}: {food.energyKcal} kcal, proteína {food.proteinG} g, grasa {food.fatG} g, carbohidratos {food.carbohydratesG} g"
+                          for food in verified_foods))
     elif food_available:
         food_block = "Base alimentaria estructurada disponible, pero sin coincidencias para las preferencias indicadas."
 
@@ -236,9 +266,10 @@ def build_prompt(context: DietPlanGenerationContext, verified_foods, chunks, foo
         '"calories": <numero o null>, "protein": <numero o null>, "carbohydrates": <numero o null>, '
         '"fat": <numero o null>, "notes": "<opcional o null>"}]}], "recommendations": ["<recomendación>"]}\n\n'
         'REGLA ESTRICTA para "quantity": debe ser SIEMPRE un número JSON puro (ej. 100, 1, 0.5), NUNCA un '
-        'texto ni una combinación de cantidad y unidad. La unidad va SIEMPRE por separado en "unit" (ej. "g", '
-        '"taza", "cucharada", "pieza"). Ejemplo CORRECTO: {"foodName": "Avena", "quantity": 1, "unit": "taza"}. '
-        'Ejemplos INCORRECTOS que NUNCA debes producir: {"quantity": "1 taza"} o {"quantity": "100g"}.'
+        'texto ni una combinación de cantidad y unidad. Para este borrador, "unit" debe ser SIEMPRE "g". '
+        'Ejemplo CORRECTO: {"foodName": "AVENA (HOJUELAS)", "quantity": 40, "unit": "g"}. '
+        'Ejemplos INCORRECTOS que NUNCA debes producir: {"quantity": "1 taza"}, {"quantity": "100g"} '
+        'o {"quantity": 1, "unit": "pieza"}. Incluye exactamente el número de comidas solicitado.'
     )
     return DIET_PLAN_SYSTEM_PROMPT, user_prompt
 
@@ -344,10 +375,21 @@ def _nutrition_retry_feedback(context: DietPlanGenerationContext, generated: Gen
                 f"- {label}: generado {current:.1f} {unit}; objetivo {target:.1f} {unit}.")
     errors = [item["message"]
               for item in validations if item.get("isBlocking")]
+    scale_hint = ""
+    total_calories = totals.get("totalCalories")
+    if total_calories and context.targetCalories:
+        ratio = context.targetCalories / total_calories
+        if abs(ratio - 1) > 0.05:
+            action = "aumenta" if ratio > 1 else "reduce"
+            scale_hint = (
+                f"\nEl total generado está muy lejos del objetivo (factor {ratio:.2f}x). {action.capitalize()} "
+                "las cantidades de forma proporcional en TODAS las comidas, no solo en una; agrega más "
+                "alimentos si hace falta en vez de repetir las mismas porciones pequeñas."
+            )
     return (
         "\n\nCORRECCIÓN NUTRICIONAL OBLIGATORIA: la respuesta anterior era JSON válido, "
         "pero no cumplía las reglas. Genera un plan nuevo completo; no expliques el error.\n" +
-        "\n".join(lines) + "\nErrores que debes corregir:\n- " + "\n- ".join(errors) +
+        "\n".join(lines) + "\nErrores que debes corregir:\n- " + "\n- ".join(errors) + scale_hint +
         "\nVuelve a contar las comidas y suma de nuevo todos los nutrientes antes de responder."
     )
 
@@ -505,15 +547,19 @@ async def get_generation_status(db, generation_id: str) -> GenerationStatusRead:
 
 async def _execute_generation(db, consultation, context: DietPlanGenerationContext, client: LLMClient,
                               generation_id: str, *, instructions: Optional[str] = None, previous_plan=None) -> DietPlanGenerationResponse:
+    pipeline_started = time.monotonic()
     await _set_stage(db, generation_id, GenerationStage.LOADING_FOOD_DATA)
+    food_started = time.monotonic()
     food_service = get_food_database_service()
     food_available = food_service.is_available()
     verified_foods = []
     if food_available:
-        for preference in context.foodPreferences[:5]:
-            verified_foods.extend(food_service.search(preference, limit=2))
+        verified_foods = _verified_foods_for_prompt(
+            food_service, context.foodPreferences)
+    food_ms = int((time.monotonic() - food_started) * 1000)
 
     await _set_stage(db, generation_id, GenerationStage.SEARCHING_KNOWLEDGE)
+    rag_started = time.monotonic()
     knowledge_available = False
     chunks = []
     try:
@@ -523,10 +569,13 @@ async def _execute_generation(db, consultation, context: DietPlanGenerationConte
         knowledge_available = len(chunks) > 0
     except Exception:
         chunks, knowledge_available = [], False
+    rag_ms = int((time.monotonic() - rag_started) * 1000)
 
     await _set_stage(db, generation_id, GenerationStage.BUILDING_CONTEXT)
+    context_started = time.monotonic()
     system_prompt, user_prompt = build_prompt(context, verified_foods, chunks, food_available, knowledge_available,
                                               instructions=instructions, previous_plan=previous_plan)
+    context_ms = int((time.monotonic() - context_started) * 1000)
 
     await _set_stage(db, generation_id, GenerationStage.GENERATING_WITH_LLM)
     started = time.monotonic()
@@ -567,6 +616,7 @@ async def _execute_generation(db, consultation, context: DietPlanGenerationConte
     metrics = plan_metrics(generated)
 
     await _set_stage(db, generation_id, GenerationStage.PERSISTING)
+    persistence_started = time.monotonic()
     async with db.tx() as tx:
         await tx.aigeneration.update(where={"id": generation_id}, data={
             "knowledgeBaseVersion": knowledge_base_version(), "executionTimeMs": execution_ms, "status": "SUCCESS",
@@ -592,7 +642,7 @@ async def _execute_generation(db, consultation, context: DietPlanGenerationConte
                 "foodName": food.foodName, "quantity": food.quantity, "unit": food.unit,
                 "calories": food.calories, "protein": food.protein,
                 "carbohydrates": food.carbohydrates, "fat": food.fat,
-                # Nunca inventado por el LLM; sin fuente estructurada real todavía queda null (sección 7/28).
+                # No hay fuente estructurada verificable para asignar una equivalencia.
                 "smaeEquivalent": None, "notes": food.notes,
             } for food in meal.foods]
             meals_data.append({"mealType": meal.mealType, "name": meal.name,
@@ -617,9 +667,21 @@ async def _execute_generation(db, consultation, context: DietPlanGenerationConte
             "meals": {"include": {"foods": True}}, "nutrientObservations": True,
             "generationLinks": True, "validations": True})
 
-        return DietPlanGenerationResponse(
+        response = DietPlanGenerationResponse(
             generationId=generation_id, dietPlanId=plan.id, version=version, status="SUCCESS",
             plan=plan_read(full_plan), validations=[_validation_read(v) for v in full_plan.validations or []],
             sources=await _sources_read(tx, generation_id),
             foodDatabaseUsed=food_available, knowledgeBaseUsed=knowledge_available,
         )
+
+    persistence_ms = int((time.monotonic() - persistence_started) * 1000)
+    pipeline_ms = int((time.monotonic() - pipeline_started) * 1000)
+    logger.info(
+        "Generación %s completada: food=%dms rag=%dms context=%dms llm_validation=%dms "
+        "persistence=%dms pipeline=%dms prompt_chars=%d foods=%d chunks=%d attempts=%d",
+        generation_id, food_ms, rag_ms, context_ms, execution_ms, persistence_ms,
+        pipeline_ms, len(system_prompt) +
+        len(user_prompt), len(verified_foods),
+        len(chunks), nutrition_attempt + 1,
+    )
+    return response

@@ -1,9 +1,4 @@
-"""Manifiesto de fuentes autorizadas para el RAG (Fase 3.5).
-
-El RAG nunca procesa un documento que no esté declarado aquí, y un documento
-declarado que no exista en disco simplemente se ignora (sin excepción). Ver
-PHASE3_5.md para el formato completo y cómo agregar una fuente real.
-"""
+"""Carga y actualiza la lista de fuentes autorizadas para RAG."""
 import json
 import logging
 import os
@@ -17,10 +12,7 @@ DEFAULT_MANIFEST_PATH = "/app/data/knowledge_base/manifest.json"
 REQUIRED_SOURCE_FIELDS = ("id", "name", "file")
 VALID_SOURCE_TYPES = {"GUIDELINE", "REFERENCE_TABLE", "REGULATION", "OTHER"}
 
-# Sección 21: el prototipo es una sola instancia -no hace falta un lock
-# distribuido-, pero dos requests concurrentes (alta + baja, o dos altas a la
-# vez) sí pueden entrelazar su lectura-modificación-escritura del mismo
-# archivo dentro del mismo proceso. Este lock serializa esa sección crítica.
+# Serializa las actualizaciones concurrentes del manifiesto en este proceso.
 _manifest_lock = threading.Lock()
 
 
@@ -44,23 +36,28 @@ def load_manifest() -> dict:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        logger.error("Manifiesto de conocimiento en %s es ilegible o no es JSON válido: %s", path, exc)
+        logger.error(
+            "Manifiesto de conocimiento en %s es ilegible o no es JSON válido: %s", path, exc)
         return {"version": None, "sources": []}
 
     if not isinstance(raw, dict) or not isinstance(raw.get("sources"), list):
-        logger.error("Manifiesto de conocimiento en %s tiene un formato inválido (se esperaba un objeto con 'sources').", path)
+        logger.error(
+            "Manifiesto de conocimiento en %s tiene un formato inválido (se esperaba un objeto con 'sources').", path)
         return {"version": None, "sources": []}
 
-    version = raw.get("version") if isinstance(raw.get("version"), str) else None
+    version = raw.get("version") if isinstance(
+        raw.get("version"), str) else None
     sources = []
     seen_ids = set()
     for entry in raw["sources"]:
         if not isinstance(entry, dict) or any(not entry.get(field) for field in REQUIRED_SOURCE_FIELDS):
-            logger.error("Entrada de fuente inválida u omitida en el manifiesto (%s): %r", path, entry)
+            logger.error(
+                "Entrada de fuente inválida u omitida en el manifiesto (%s): %r", path, entry)
             continue
         source_id = str(entry["id"])
         if source_id in seen_ids:
-            logger.error("Id de fuente duplicado en el manifiesto (%s): %s. Se omite la repetición.", path, source_id)
+            logger.error(
+                "Id de fuente duplicado en el manifiesto (%s): %s. Se omite la repetición.", path, source_id)
             continue
         seen_ids.add(source_id)
         source_type = entry.get("type", "GUIDELINE")
@@ -80,8 +77,7 @@ def load_manifest() -> dict:
             "publicationYear": publication_year,
             "file": str(entry["file"]),
             "type": source_type,
-            # Por defecto activo: los manifiestos existentes sin este campo
-            # (Fase 3.5/4/5) siguen funcionando sin cambios.
+            # Mantiene activos los manifiestos creados antes de este campo.
             "active": bool(entry.get("active", True)),
             "scope": scope,
         })
@@ -137,9 +133,11 @@ def _read_raw() -> dict:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise ManifestError(f"El manifiesto en {path} es ilegible o no es JSON válido: {exc}") from exc
+        raise ManifestError(
+            f"El manifiesto en {path} es ilegible o no es JSON válido: {exc}") from exc
     if not isinstance(raw, dict) or not isinstance(raw.get("sources"), list):
-        raise ManifestError(f"El manifiesto en {path} tiene un formato inválido.")
+        raise ManifestError(
+            f"El manifiesto en {path} tiene un formato inválido.")
     return raw
 
 
@@ -151,7 +149,8 @@ def save_manifest(data: dict) -> None:
     path = _manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + f".tmp-{os.getpid()}")
-    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.write_text(json.dumps(
+        data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp_path, path)
 
 
@@ -162,7 +161,8 @@ def add_source_entry(entry: dict) -> None:
     with _manifest_lock:
         raw = _read_raw()
         if any(str(source.get("id")) == entry["id"] for source in raw["sources"] if isinstance(source, dict)):
-            raise ManifestError(f"Ya existe una entrada de manifiesto con id '{entry['id']}'.")
+            raise ManifestError(
+                f"Ya existe una entrada de manifiesto con id '{entry['id']}'.")
         raw["sources"].append(entry)
         save_manifest(raw)
 
@@ -173,7 +173,8 @@ def remove_source_entry(manifest_source_id: str) -> None:
     viva, así que no hay nada que conservar como histórico)."""
     with _manifest_lock:
         raw = _read_raw()
-        remaining = [s for s in raw["sources"] if not (isinstance(s, dict) and str(s.get("id")) == manifest_source_id)]
+        remaining = [s for s in raw["sources"] if not (
+            isinstance(s, dict) and str(s.get("id")) == manifest_source_id)]
         if len(remaining) == len(raw["sources"]):
             return
         raw["sources"] = remaining
@@ -202,7 +203,8 @@ def next_manifest_source_id(base_slug: str) -> str:
     import uuid
     with _manifest_lock:
         raw = _read_raw()
-        existing_ids = {str(s.get("id")) for s in raw["sources"] if isinstance(s, dict)}
+        existing_ids = {str(s.get("id"))
+                        for s in raw["sources"] if isinstance(s, dict)}
     candidate = base_slug
     if candidate not in existing_ids:
         return candidate

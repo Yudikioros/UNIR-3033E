@@ -1,1 +1,1 @@
-"""Persistence adapters using the existing async Prisma client."""
+"""Adaptadores de persistencia basados en el cliente asíncrono de Prisma."""

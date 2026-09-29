@@ -1,11 +1,4 @@
-"""
-Acceso a datos exclusivo del asistente IA contextual: búsquedas y consultas
-agregadas que no existían en los repositorios de captura/planes, más la
-trazabilidad de interacciones (sección 18).
-
-Nunca ejecuta SQL crudo generado por el LLM (sección 9): todo aquí es
-Prisma tipado, igual que el resto del proyecto.
-"""
+"""Consultas del asistente y registro mínimo de interacciones."""
 import json
 
 PATIENT_INCLUDE = {"conditions": True}
@@ -45,10 +38,9 @@ async def list_patients_by_plan_status(db, status: str, limit: int = 20) -> list
 
 
 async def log_interaction(db, *, prompt_version: str, model: str, user_question: str,
-                           navigation_context: dict, tools_used: list[str], source_ids: list[str],
-                           execution_time_ms: int, status: str, error_message: str | None = None) -> str:
-    """Registra la interacción (sección 18). Nunca persiste la respuesta
-    completa del LLM: solo metadatos de trazabilidad."""
+                          navigation_context: dict, tools_used: list[str], source_ids: list[str],
+                          execution_time_ms: int, status: str, error_message: str | None = None) -> str:
+    """Registra metadatos de la interacción, no la respuesta del modelo."""
     row = await db.assistantinteraction.create(data={
         "promptVersion": prompt_version, "model": model, "userQuestion": user_question[:1000],
         "navigationContext": json.dumps(navigation_context, ensure_ascii=False),

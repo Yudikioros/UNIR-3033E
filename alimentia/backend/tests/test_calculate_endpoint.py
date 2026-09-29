@@ -23,7 +23,8 @@ class CalculateEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.app = FastAPI()
         self.app.state.db = self.db
         self.app.include_router(router)
-        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url='http://test/api/v1/')
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(
+            app=self.app), base_url='http://test/api/v1/')
 
     async def asyncTearDown(self):
         await self.client.aclose()
@@ -38,7 +39,7 @@ class CalculateEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def consultation(self, patient=None, **changes):
         patient = patient or await self.patient()
         payload = {'ageAtConsultation': 28, 'sex': 'female', 'weightKg': 68, 'heightM': 1.65,
-            'activityLevel': 'moderate', 'goal': 'WEIGHT_LOSS', 'mealsPerDay': 5, **changes}
+                   'activityLevel': 'moderate', 'goal': 'WEIGHT_LOSS', 'mealsPerDay': 5, **changes}
         response = await self.client.post(f"patients/{patient['id']}/consultations", json=payload)
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()
@@ -68,9 +69,29 @@ class CalculateEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         # El resultado persiste: una lectura posterior GET refleja el mismo cálculo.
         fetched = await self.client.get(f"consultations/{consultation['id']}")
-        self.assertEqual(fetched.json()['targetCalories'], body['targetCalories'])
+        self.assertEqual(
+            fetched.json()['targetCalories'], body['targetCalories'])
         self.assertEqual(await self.db.consultationcalculation.count(), 1)
         self.assertEqual(await self.db.calculationmetric.count(), 9)
+
+    async def test_consulta_aplica_valores_nutricionales_personalizados(self):
+        consultation = await self.consultation(
+            targetCaloriesOverride=1850,
+            proteinGramsOverride=120,
+            carbohydrateGramsOverride=210,
+            fatGramsOverride=60,
+            fiberGramsOverride=28,
+            waterLitersOverride=2.1,
+        )
+        response = await self.client.post(f"consultations/{consultation['id']}/calculate")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body['targetCalories'], 1850)
+        self.assertEqual(body['proteinGrams'], 120)
+        self.assertEqual(body['carbohydrateGrams'], 210)
+        self.assertEqual(body['fatGrams'], 60)
+        self.assertEqual(body['fiberGrams'], 28)
+        self.assertEqual(body['waterLiters'], 2.1)
 
     async def test_recalculo_agrega_historial_sin_sobrescribir(self):
         consultation = await self.consultation()
@@ -78,7 +99,8 @@ class CalculateEndpointTests(unittest.IsolatedAsyncioTestCase):
         second = await self.client.post(f"consultations/{consultation['id']}/calculate")
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
-        self.assertEqual(first.json()['targetCalories'], second.json()['targetCalories'])
+        self.assertEqual(first.json()['targetCalories'], second.json()[
+                         'targetCalories'])
         # Cada llamada agrega un registro nuevo; no se sobrescribe el historial.
         self.assertEqual(await self.db.consultationcalculation.count(), 2)
         self.assertEqual(await self.db.calculationmetric.count(), 18)
@@ -96,26 +118,35 @@ class CalculateEndpointTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post(f"consultations/{consultation['id']}/calculate")
         self.assertEqual(response.status_code, 400, response.text)
 
-    async def test_maria_gonzalez_demo_seed_calcula_correctamente(self):
-        patient_id, consultation_id = await seed(self.db)
+    async def test_caso_01_seed_calcula_correctamente(self):
+        case_ids = await seed(self.db)
+        self.assertEqual(
+            case_ids, ['CASE-01', 'CASE-02', 'CASE-03', 'CASE-04', 'CASE-05'])
+        consultation = await self.db.nutritionconsultation.find_unique(
+            where={'demoKey': 'CASE-01-consultation'})
+        self.assertIsNotNone(consultation)
+        consultation_id = consultation.id
         response = await self.client.post(f"consultations/{consultation_id}/calculate")
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
 
-        expected_bmr = (10 * 68.0) + (6.25 * 165.0) - (5 * 28) - 161
+        expected_bmr = (10 * 68.0) + (6.25 * 160.0) - (5 * 28) - 161
         expected_tdee = expected_bmr * 1.55
         expected_target = expected_tdee - 500
 
-        self.assertAlmostEqual(body['basalMetabolicRate'], round(expected_bmr, 2), places=6)
-        self.assertAlmostEqual(body['totalEnergyExpenditure'], round(expected_tdee, 2), places=6)
-        self.assertAlmostEqual(body['targetCalories'], round(expected_target, 2), places=6)
+        self.assertAlmostEqual(
+            body['basalMetabolicRate'], round(expected_bmr, 2), places=6)
+        self.assertAlmostEqual(
+            body['totalEnergyExpenditure'], round(expected_tdee, 2), places=6)
+        self.assertAlmostEqual(body['targetCalories'], round(
+            expected_target, 2), places=6)
         self.assertEqual(body['calculationMethod'], 'MIFFLIN_ST_JEOR')
 
-        # La consulta seed ya traía un registro de cálculo vacío (Fase 1); esta
-        # llamada agrega el segundo, ahora con métricas reales.
-        self.assertEqual(await self.db.consultationcalculation.count(), 2)
-        self.assertEqual(await self.db.patient.count(), 1)
-        self.assertEqual(await self.db.nutritionconsultation.count(), 1)
+        # El seed crea un cálculo ground-truth para cada uno de sus cinco casos;
+        # esta llamada agrega el cálculo determinístico de CASE-01.
+        self.assertEqual(await self.db.consultationcalculation.count(), 6)
+        self.assertEqual(await self.db.patient.count(), 5)
+        self.assertEqual(await self.db.nutritionconsultation.count(), 5)
 
 
 if __name__ == '__main__':

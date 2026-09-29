@@ -1,8 +1,4 @@
-"""Endpoint del asistente IA contextual (sección 31). Aislado del resto de
-rutas igual que `capture.py`/`resources.py`: no depende de que Qdrant/Ollama
-estén listos para poder probarse, y usa `CaptureRoute` para el mismo
-vocabulario de errores del resto de la API.
-"""
+"""Expone el asistente contextual con el manejo de errores de captura."""
 from fastapi import APIRouter, Request
 
 from app.routes.capture import CaptureRoute

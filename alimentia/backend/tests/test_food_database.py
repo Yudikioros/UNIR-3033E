@@ -70,13 +70,15 @@ class BamExcelFoodDatabaseTests(unittest.TestCase):
                 self.assertIsInstance(record, food_db.FoodNutrientRecord)
                 self.assertEqual(record.id, f'{food_db.FOOD_SOURCE_ID}:1001')
                 self.assertEqual(record.name, 'POLLO PECHUGA SIN PIEL')
-                self.assertEqual(record.normalizedName, 'pollo pechuga sin piel')
+                self.assertEqual(record.normalizedName,
+                                 'pollo pechuga sin piel')
                 self.assertEqual(record.energyKcal, 165.0)
                 self.assertEqual(record.proteinG, 31.0)
                 self.assertEqual(record.fatG, 3.6)
                 self.assertEqual(record.carbohydratesG, 0.0)
                 self.assertEqual(record.sourceId, food_db.FOOD_SOURCE_ID)
-                self.assertEqual(record.sourceVersion, food_db.FOOD_SOURCE_VERSION)
+                self.assertEqual(record.sourceVersion,
+                                 food_db.FOOD_SOURCE_VERSION)
                 self.assertIsNotNone(record.sourceReference)
                 # Todos los nutrientes son numéricos.
                 for field in ('energyKcal', 'proteinG', 'carbohydratesG', 'fatG'):
@@ -124,13 +126,27 @@ class BamExcelFoodDatabaseTests(unittest.TestCase):
     def test_busqueda_insensible_a_acentos(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'BAM.xlsx'
-            _write_bam(path, rows=[['2001', 'PLATANO TABASCO', 89, 1.1, 0.3, 23]])
+            _write_bam(
+                path, rows=[['2001', 'PLATANO TABASCO', 89, 1.1, 0.3, 23]])
             with patch.dict('os.environ', {'ALIMENTIA_FOOD_DB_PATH': str(path)}):
                 food_db.reset_food_database_cache()
                 # La query lleva acento; el dato real en BAM no lo tiene.
                 records = food_db.search('PLÁTANO')
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0].name, 'PLATANO TABASCO')
+
+    def test_indice_de_busqueda_se_calcula_al_cargar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'BAM.xlsx'
+            _write_bam(
+                path, rows=[['2001', 'PLÁTANO TABASCO', 89, 1.1, 0.3, 23]])
+            with patch.dict('os.environ', {'ALIMENTIA_FOOD_DB_PATH': str(path)}):
+                food_db.reset_food_database_cache()
+                dataframe = food_db.load_food_database()
+                self.assertEqual(
+                    dataframe.iloc[0][food_db.NORMALIZED_NAME_COLUMN], 'platano tabasco')
+                self.assertEqual(
+                    dataframe.iloc[0][food_db.NAME_LENGTH_COLUMN], len('PLÁTANO TABASCO'))
 
     def test_valores_nd_se_excluyen_sin_inventar_dato(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -143,7 +159,7 @@ class BamExcelFoodDatabaseTests(unittest.TestCase):
 
 REAL_BAM_PATH = None
 for candidate in (Path('/app/data/tables/BAM.xlsx'),
-                   Path(__file__).resolve().parents[2] / 'data' / 'tables' / 'BAM.xlsx'):
+                  Path(__file__).resolve().parents[2] / 'data' / 'tables' / 'BAM.xlsx'):
     if candidate.exists():
         REAL_BAM_PATH = candidate
         break
@@ -155,7 +171,8 @@ class RealBamSearchTests(unittest.TestCase):
     etapa de integración de recursos reales previa a Fase 6."""
 
     def setUp(self):
-        self._patcher = patch.dict('os.environ', {'ALIMENTIA_FOOD_DB_PATH': str(REAL_BAM_PATH)})
+        self._patcher = patch.dict(
+            'os.environ', {'ALIMENTIA_FOOD_DB_PATH': str(REAL_BAM_PATH)})
         self._patcher.start()
         food_db.reset_food_database_cache()
 
@@ -175,7 +192,8 @@ class RealBamSearchTests(unittest.TestCase):
         self.assertTrue(records, f'sin resultados reales para "{query}"')
         for record in records:
             self.assertIsInstance(record, food_db.FoodNutrientRecord)
-            self.assertIn(expected_substring, food_db._strip_accents(record.name))
+            self.assertIn(expected_substring,
+                          food_db._strip_accents(record.name))
             self.assertGreater(record.energyKcal, 0)
             self.assertGreaterEqual(record.proteinG, 0)
             self.assertGreaterEqual(record.carbohydratesG, 0)

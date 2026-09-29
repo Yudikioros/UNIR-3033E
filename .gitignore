@@ -34,7 +34,7 @@ build/
 .docker/
 
 # Data
-alimentia/data/db/alimentia.db
+alimentia/data/db/alimentia*
 alimentia/data/ollama/
 alimentia/data/qdrant_storage/
 

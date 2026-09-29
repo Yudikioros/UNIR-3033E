@@ -1,10 +1,7 @@
-"""Contratos de generación de borrador con LLM (Fase 4).
+"""Contratos para generar y consultar borradores de planes.
 
-`DietPlanGenerationContext` es lo único que se envía al LLM: nunca contiene
-nombre, UUID de paciente, email, teléfono ni ningún otro identificador
-interno. `GeneratedDietPlan` es el contrato de salida — el LLM organiza y
-propone; los valores nutricionales que declara nunca se asumen como verdad
-hasta pasar las validaciones deterministas.
+El contexto enviado al modelo no contiene identificadores del paciente. La
+salida se valida antes de usarse y persistirse.
 """
 from datetime import datetime
 
@@ -29,7 +26,7 @@ class DietPlanGenerationContext(Contract):
     allergiesOrIntolerances: list[str] = Field(default_factory=list)
     notes: str | None = None
 
-    # Resultados de Fase 3: fuente de verdad. El LLM nunca los recalcula.
+    # El LLM recibe estos resultados como valores de referencia.
     targetCalories: float
     proteinGrams: float
     carbohydrateGrams: float

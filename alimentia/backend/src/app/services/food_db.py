@@ -1,10 +1,8 @@
 """
-Base alimentaria del dominio (Fase 3.5).
+Adaptador de fuentes alimentarias al contrato del dominio.
 
-BAM.xlsx es un adaptador legado, no un requisito del dominio. El resto del
-sistema debe depender de `get_food_database_service()` (FoodDatabaseService),
-nunca del nombre del archivo ni de sus columnas en español. Ver PHASE3_5.md
-para cómo sustituirlo por una fuente oficial.
+El resto del sistema usa `get_food_database_service()` y no depende del
+formato de BAM.xlsx.
 """
 import logging
 import os
@@ -17,13 +15,14 @@ from typing import Optional
 import pandas as pd
 from pydantic import BaseModel
 
-# Usamos el logger nativo de FastAPI para asegurar que se imprima
 logger = logging.getLogger("uvicorn.error")
 
 SHEET_NAME = "BAM 18.1.1"
 HEADER_ROW = 12  # fila 13 de Excel (header=12, base cero)
 REQUIRED_COLUMNS = ["codigomex2", "nombre_del_alimento",
-                     "energ_kcal", "protein", "lipid_tot", "carbohydrt"]
+                    "energ_kcal", "protein", "lipid_tot", "carbohydrt"]
+NORMALIZED_NAME_COLUMN = "_normalized_name"
+NAME_LENGTH_COLUMN = "_name_length"
 
 FOOD_SOURCE_ID = "bam-legacy"
 FOOD_SOURCE_NAME = "Base de Alimentos de México"
@@ -35,6 +34,7 @@ def _strip_accents(value: str) -> str:
     """Normaliza para comparación: sin acentos, sin mayúsculas. No altera el dato original."""
     normalized = unicodedata.normalize("NFKD", value)
     return "".join(c for c in normalized if not unicodedata.combining(c)).casefold()
+
 
 _lock = threading.Lock()
 _cache = {"loaded": False, "df": None,
@@ -51,7 +51,11 @@ def _read_food_database(path: Path) -> pd.DataFrame:
     if missing:
         raise ValueError(
             f"Faltan columnas requeridas en BAM.xlsx: {', '.join(missing)}")
-    return df.dropna(subset=["nombre_del_alimento"])
+    df = df.dropna(subset=["nombre_del_alimento"]).copy()
+    df[NORMALIZED_NAME_COLUMN] = df["nombre_del_alimento"].map(
+        lambda value: _strip_accents(value) if isinstance(value, str) else "")
+    df[NAME_LENGTH_COLUMN] = df["nombre_del_alimento"].str.len()
+    return df
 
 
 def load_food_database(force: bool = False) -> Optional[pd.DataFrame]:
@@ -67,7 +71,7 @@ def load_food_database(force: bool = False) -> Optional[pd.DataFrame]:
                 "Base de Alimentos de México (BAM.xlsx) no configurada todavía en %s. "
                 "La base alimentaria queda marcada como no disponible.", path)
             _cache.update(loaded=True, df=None,
-                           file_found=False, schema_valid=False)
+                          file_found=False, schema_valid=False)
             return None
 
         try:
@@ -76,13 +80,13 @@ def load_food_database(force: bool = False) -> Optional[pd.DataFrame]:
             logger.error(
                 "BAM.xlsx encontrado en %s pero con hoja/columnas inválidas: %s", path, exc)
             _cache.update(loaded=True, df=None,
-                           file_found=True, schema_valid=False)
+                          file_found=True, schema_valid=False)
             return None
         except Exception as exc:
             logger.error(
                 "No fue posible leer BAM.xlsx en %s: %s", path, exc)
             _cache.update(loaded=True, df=None,
-                           file_found=True, schema_valid=False)
+                          file_found=True, schema_valid=False)
             return None
 
         logger.info(
@@ -95,7 +99,7 @@ def reset_food_database_cache() -> None:
     """Uso exclusivo en pruebas: fuerza una nueva lectura en la siguiente llamada."""
     with _lock:
         _cache.update(loaded=False, df=None,
-                       file_found=False, schema_valid=False)
+                      file_found=False, schema_valid=False)
 
 
 def food_database_status() -> dict:
@@ -111,7 +115,7 @@ def food_database_status() -> dict:
 
 
 class FoodNutrientRecord(BaseModel):
-    """DTO normalizado del dominio (Fase 3.5). Toda fuente alimentaria debe producir esto."""
+    """Registro normalizado de alimento y procedencia."""
     id: str
     name: str
     normalizedName: str
@@ -141,9 +145,8 @@ def search(food_query: str, limit: int = 3) -> list[FoodNutrientRecord]:
         return []
 
     needle = _strip_accents(food_query)
-    normalized_names = df_bam['nombre_del_alimento'].map(
-        lambda v: _strip_accents(v) if isinstance(v, str) else "")
-    match = df_bam[normalized_names.str.contains(needle, na=False, regex=False)].copy()
+    match = df_bam[df_bam[NORMALIZED_NAME_COLUMN].str.contains(
+        needle, na=False, regex=False)].copy()
 
     if match.empty:
         return []
@@ -155,10 +158,8 @@ def search(food_query: str, limit: int = 3) -> list[FoodNutrientRecord]:
     if match.empty:
         return []
 
-    # TRUCO: Ordenamos por la longitud del nombre para que 'Pollo' traiga
-    # 'POLLO, ALA' antes que 'ALIMENTO PARA BEBÉ CON POLLO'
-    match['len'] = match['nombre_del_alimento'].str.len()
-    match = match.sort_values(by='len')
+    # Prioriza nombres cortos y específicos frente a coincidencias parciales largas.
+    match = match.sort_values(by=NAME_LENGTH_COLUMN)
 
     records = []
     for _, row in match.head(limit).iterrows():
@@ -185,6 +186,36 @@ def get_exact_macros(food_query: str, limit: int = 3) -> list:
     } for record in search(food_query, limit)]
 
 
+def sample(count: int) -> list[FoodNutrientRecord]:
+    """Muestra aleatoria del BAM completo (2000+ alimentos ya cargados en
+    memoria). Evita depender de una lista fija de queries para dar variedad:
+    cada llamada puede traer alimentos distintos sin necesidad de RAG/embeddings
+    sobre datos que ya son tabulares y están en memoria.
+    """
+    df_bam = load_food_database()
+    if df_bam is None:
+        return []
+
+    required = ['energ_kcal', 'protein', 'lipid_tot', 'carbohydrt']
+    valid = df_bam.dropna(subset=required)
+    if valid.empty:
+        return []
+
+    picked = valid.sample(n=min(count, len(valid)))
+    records = []
+    for _, row in picked.iterrows():
+        name = row['nombre_del_alimento'].strip()
+        code = str(row['codigomex2']).strip()
+        records.append(FoodNutrientRecord(
+            id=f"{FOOD_SOURCE_ID}:{code}", name=name, normalizedName=_strip_accents(name),
+            energyKcal=float(row['energ_kcal']), proteinG=float(row['protein']),
+            carbohydratesG=float(row['carbohydrt']), fatG=float(row['lipid_tot']),
+            sourceId=FOOD_SOURCE_ID, sourceVersion=FOOD_SOURCE_VERSION,
+            sourceReference='BAM.xlsx (hoja "BAM 18.1.1")',
+        ))
+    return records
+
+
 class FoodDatabaseService(ABC):
     """Interfaz que debe implementar cualquier fuente alimentaria del dominio.
 
@@ -196,7 +227,11 @@ class FoodDatabaseService(ABC):
     def is_available(self) -> bool: ...
 
     @abstractmethod
-    def search(self, query: str, limit: int = 3) -> list[FoodNutrientRecord]: ...
+    def search(self, query: str,
+               limit: int = 3) -> list[FoodNutrientRecord]: ...
+
+    @abstractmethod
+    def sample(self, count: int) -> list[FoodNutrientRecord]: ...
 
     @abstractmethod
     def status(self) -> dict: ...
@@ -220,6 +255,9 @@ class BamExcelFoodDatabase(FoodDatabaseService):
 
     def search(self, query: str, limit: int = 3) -> list[FoodNutrientRecord]:
         return search(query, limit)
+
+    def sample(self, count: int) -> list[FoodNutrientRecord]:
+        return sample(count)
 
 
 _food_database_service: FoodDatabaseService = BamExcelFoodDatabase()

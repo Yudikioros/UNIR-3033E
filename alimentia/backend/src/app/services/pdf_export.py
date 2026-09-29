@@ -1,23 +1,18 @@
 """
-Exportación de plan APROBADO a PDF (Fase 6, Parte D).
+Exporta a PDF los planes aprobados.
 
-Solo un DietPlan en estado APPROVED puede exportarse como documento final
-(ver `routes/plans.py`). El PDF es un documento clínico legible por el
-paciente y el profesional: nunca incluye UUIDs, prompts, logs, scores de
-embeddings, nombres técnicos de tablas ni metadata interna de la API.
+El documento está dirigido al paciente y al profesional, no incluye
+identificadores internos ni metadatos técnicos.
 """
 from datetime import datetime
 
 from fpdf import FPDF
 from fpdf.errors import FPDFException
 
-GOAL_LABELS = {"WEIGHT_LOSS": "Pérdida de peso", "MAINTENANCE": "Mantenimiento", "WEIGHT_GAIN": "Incremento de peso"}
+GOAL_LABELS = {"WEIGHT_LOSS": "Pérdida de peso",
+               "MAINTENANCE": "Mantenimiento", "WEIGHT_GAIN": "Incremento de peso"}
 
-# La fuente core "helvetica" del PDF solo soporta Latin-1/WinAnsi (incluye
-# acentos y ¿/¡ del español). El resumen, las recomendaciones y las notas por
-# alimento vienen del LLM (texto no controlado): sin sanear, un guion largo,
-# comillas tipográficas o una viñeta que el modelo genere haría fallar toda
-# la exportación con un 500 en vez de producir el PDF.
+# Sustituye caracteres que la fuente integrada no puede representar.
 _CHAR_FALLBACKS = {
     "—": "-", "–": "-", "‘": "'", "’": "'",
     "“": '"', "”": '"', "…": "...", "•": "-",
@@ -48,19 +43,7 @@ def _quantity(value):
 
 
 def _multi_cell(pdf, h, text, indent=0, **kwargs):
-    """`multi_cell` con sangría opcional y recuperación defensiva.
-
-    fpdf2 puede lanzar `FPDFException("Not enough horizontal space...")` por
-    un cálculo de ancho disponible que falla cerca de un salto de página
-    automático, incluso con texto corto y bien formado (reproducido con datos
-    reales de esta app, no solo con texto exótico). Forzar una página nueva
-    y reintentar una vez basta para producir el PDF de todas formas: la
-    exportación nunca debe responder 500 por esto.
-
-    Siempre fija `x` al margen (+ sangría) antes de escribir: `multi_cell` dejA
-    `x` donde empezó la celda, no en el margen izquierdo, así que sin esto la
-    siguiente línea heredaría una posición y un ancho disponible incorrectos.
-    """
+    """Escribe texto con sangría y reintenta en una página nueva si falla."""
     pdf.set_x(pdf.l_margin + indent)
     try:
         pdf.multi_cell(0, h, text, **kwargs)
@@ -77,7 +60,7 @@ class _PlanPDF(FPDF):
         self.set_font("Helvetica", "I", 7)
         self.set_text_color(140, 140, 140)
         self.cell(0, 10, "Generado por AlimentIA. Este documento es un plan de referencia; "
-                          "cualquier duda debe consultarse con el profesional responsable.", align="C")
+                  "cualquier duda debe consultarse con el profesional responsable.", align="C")
 
 
 def build_plan_pdf(*, plan, consultation, patient_name: str, sources: list) -> bytes:
@@ -99,7 +82,8 @@ def build_plan_pdf(*, plan, consultation, patient_name: str, sources: list) -> b
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 6, f"Paciente: {_safe(patient_name)}", ln=True)
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, f"Fecha de emisión: {_date(datetime.now())}    Versión: {plan.version}", ln=True)
+    pdf.cell(
+        0, 6, f"Fecha de emisión: {_date(datetime.now())}    Versión: {plan.version}", ln=True)
     pdf.set_text_color(20, 120, 40)
     pdf.set_font("Helvetica", "B", 10)
     pdf.cell(0, 6, "Estado: APROBADO", ln=True)
@@ -114,14 +98,16 @@ def build_plan_pdf(*, plan, consultation, patient_name: str, sources: list) -> b
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 7, "Objetivo nutricional", ln=True)
     pdf.set_font("Helvetica", "", 10)
-    goal_label = GOAL_LABELS.get(consultation.goal or "", consultation.goal or "-")
+    goal_label = GOAL_LABELS.get(
+        consultation.goal or "", consultation.goal or "-")
     pdf.cell(0, 6, f"Objetivo: {goal_label}", ln=True)
-    pdf.cell(0, 6, f"Energia objetivo: {_num(consultation.targetCalories)} kcal", ln=True)
+    pdf.cell(
+        0, 6, f"Energia objetivo: {_num(consultation.targetCalories)} kcal", ln=True)
     pdf.cell(0, 6, f"Proteina: {_num(consultation.proteinGrams)} g   "
-                   f"Carbohidratos: {_num(consultation.carbohydrateGrams)} g   "
-                   f"Grasa: {_num(consultation.fatGrams)} g", ln=True)
+             f"Carbohidratos: {_num(consultation.carbohydrateGrams)} g   "
+             f"Grasa: {_num(consultation.fatGrams)} g", ln=True)
     pdf.cell(0, 6, f"Fibra: {_num(consultation.fiberGrams)} g   "
-                   f"Agua: {_num(consultation.waterLiters, 2)} L", ln=True)
+             f"Agua: {_num(consultation.waterLiters, 2)} L", ln=True)
     pdf.ln(4)
 
     if plan.summary:
@@ -138,7 +124,8 @@ def build_plan_pdf(*, plan, consultation, patient_name: str, sources: list) -> b
         pdf.set_x(pdf.l_margin)
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_fill_color(240, 244, 248)
-        pdf.cell(0, 7, f"{_safe(meal.mealType)} - {_safe(meal.name)}", ln=True, fill=True)
+        pdf.cell(
+            0, 7, f"{_safe(meal.mealType)} - {_safe(meal.name)}", ln=True, fill=True)
         pdf.set_font("Helvetica", "", 9.5)
         for food in meal.foods:
             line = f"- {_safe(food.foodName)}: {_quantity(food.quantity)} {_safe(food.unit) or ''}".rstrip()
@@ -175,7 +162,8 @@ def build_plan_pdf(*, plan, consultation, patient_name: str, sources: list) -> b
             _multi_cell(pdf, 5.5, f"- {label}")
     else:
         pdf.set_text_color(120, 120, 120)
-        _multi_cell(pdf, 5.5, "No se recuperó contexto documental específico para este plan.")
+        _multi_cell(
+            pdf, 5.5, "No se recuperó contexto documental específico para este plan.")
         pdf.set_text_color(0, 0, 0)
 
     return bytes(pdf.output())

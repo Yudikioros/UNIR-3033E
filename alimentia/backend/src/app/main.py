@@ -1,12 +1,8 @@
-import json
+import asyncio
 import os
-import threading
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from qdrant_client import QdrantClient
-from llama_index.vector_stores.qdrant import QdrantVectorStore
-from llama_index.core import VectorStoreIndex
 from prisma import Prisma
 from app.repositories.legacy import list_plans, save_legacy_draft
 from app.repositories.knowledge import sync_knowledge_sources
@@ -27,40 +23,43 @@ from app.services.rag_engine import (
 )
 from app.services.ollama_runtime import preload_ollama_model
 
-# Instanciamos el cliente de Prisma
 db = Prisma()
 
-# --- GESTOR DE ARRANQUE EN SEGUNDO PLANO ---
+# Carga los recursos externos sin retrasar el inicio de la API.
+
+
+async def _warm_up_runtime() -> None:
+    try:
+        await asyncio.to_thread(get_embedding_model)
+        print("Modelo de embeddings RAG listo y reutilizable.")
+    except Exception as exc:
+        print(
+            f"Aviso: no fue posible precargar el modelo de embeddings. {exc}")
+
+    await preload_ollama_model()
+    print("Iniciando motor RAG en segundo plano...")
+    await asyncio.to_thread(build_knowledge_base)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 2. CONEXIÓN A LA BASE DE DATOS
     print("🗄️ Conectando a la base de datos con Prisma...")
     await db.connect()
 
     try:
         await sync_knowledge_sources(db, knowledge_path())
     except Exception as exc:
-        print(f"Aviso: no fue posible sincronizar fuentes de conocimiento. {exc}")
+        print(
+            f"Aviso: no fue posible sincronizar fuentes de conocimiento. {exc}")
 
-    # Cargar el encoder una vez al inicio evita que la primera búsqueda RAG
-    # tenga que inicializar el modelo durante una generación de plan.
+    warmup_task = asyncio.create_task(_warm_up_runtime())
     try:
-        get_embedding_model()
-        print("Modelo de embeddings RAG listo y reutilizable.")
-    except Exception as exc:
-        print(f"Aviso: no fue posible precargar el modelo de embeddings. {exc}")
-
-    # Descarga si es necesario y mantiene el modelo listo desde el inicio de sesión.
-    await preload_ollama_model()
-
-    print("⏳ Iniciando motor RAG en segundo plano...")
-    threading.Thread(target=build_knowledge_base).start()
-    yield
-
-    # Desconexión segura al apagar
-    await db.disconnect()
+        yield
+    finally:
+        warmup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await warmup_task
+        await db.disconnect()
 
 app = FastAPI(title="AlimentIA Backend", lifespan=lifespan)
 app.state.db = db
@@ -72,7 +71,8 @@ app.include_router(assistant_router)
 app.include_router(dashboard_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()],
+    allow_origins=[origin.strip() for origin in os.getenv(
+        "CORS_ORIGINS", "").split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -80,12 +80,14 @@ app.add_middleware(
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 
-# --- CONEXIÓN SEGURA PEREZOSA (LAZY LOADING) ---
-
 
 def get_clinical_retriever():
-    """Se conecta a Qdrant solo cuando se necesita, evitando chocar con la ingesta."""
+    """Conecta con Qdrant bajo demanda para la ruta de generación legacy."""
     try:
+        from qdrant_client import QdrantClient
+        from llama_index.vector_stores.qdrant import QdrantVectorStore
+        from llama_index.core import VectorStoreIndex
+
         client_qdrant = QdrantClient(url=QDRANT_URL)
         vector_store = QdrantVectorStore(
             client=client_qdrant, collection_name=KNOWLEDGE_COLLECTION)
@@ -110,14 +112,12 @@ async def generate_draft(patient: PatientIn):
             gender=patient.gender, activity_level=patient.activity_level
         )
 
-        # 1. RAG Tabular (Excel INSP)
         exact_foods_context = []
         if patient.food_preferences:
             for food in patient.food_preferences:
                 macros = get_exact_macros(food, limit=2)
                 exact_foods_context.extend(macros)
 
-        # 2. RAG Semántico (Guías Clínicas Qdrant)
         clinical_guidelines = ""
         retriever = get_clinical_retriever()
         if retriever:
@@ -128,28 +128,22 @@ async def generate_draft(patient: PatientIn):
             except Exception as e:
                 print(f"Aviso: Fallo al consultar Qdrant. {e}")
 
-        # 3. Enviar todo al LLM
         llm_response_string = await generate_diet_plan_draft(
             patient, nutritional_requirements, exact_foods_context, clinical_guidelines
         )
 
-        # 4. VALIDACIÓN ESTRICTA CON PYDANTIC
         try:
-            # Pydantic valida que la respuesta cumpla con la estructura exacta de DietPlanDraft
             validated_plan = DietPlanDraft.model_validate_json(
                 llm_response_string)
 
-            # Convertimos el modelo validado a un diccionario seguro para la respuesta
             diet_plan_dict = validated_plan.model_dump()
 
         except Exception as e:
-            # Si el LLM no generó el JSON esperado, lo atrapamos aquí
             return {
                 "message": f"Fallo en la validación estructural del LLM: {str(e)}",
                 "raw_llm_output": llm_response_string
             }
 
-        # 5. GUARDADO EN BASE DE DATOS CON PRISMA
         nuevo_paciente = await save_legacy_draft(db, patient, nutritional_requirements, validated_plan)
 
         return {
@@ -167,7 +161,6 @@ async def generate_draft(patient: PatientIn):
 @app.get("/api/v1/plans")
 async def get_plans():
     try:
-        # Obtenemos todos los planes e incluimos los datos del paciente asociado
         return await list_plans(db)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

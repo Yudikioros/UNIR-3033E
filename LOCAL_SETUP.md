@@ -1,169 +1,197 @@
-# Ejecutar AlimentIA en Windows
+# Ejecutar AlimentIA localmente con GPU NVIDIA
 
-## Arquitectura
+Esta guía explica cómo iniciar la aplicación completa con Docker Compose,
+cargar los datos de demostración y comprobar que Ollama utiliza la GPU.
 
-| Servicio | Tecnología | Dirección local |
-| --- | --- | --- |
-| Interfaz | Next.js 16, React 19, Tailwind 4 | http://localhost:3000 |
-| API | FastAPI, Python 3.14, Prisma | http://localhost:8080/docs |
-| Documentos vectorizados | Qdrant, LlamaIndex, embeddings de Hugging Face | http://localhost:6333/dashboard |
-| Modelo de lenguaje | Ollama | http://localhost:11434 |
+## Servicios
 
-Prisma guarda pacientes y planes en SQLite, en `alimentia/data/db/alimentia.db`.
+| Servicio            | Dirección                       |
+| ------------------- | ------------------------------- |
+| Interfaz web        | http://localhost:3000           |
+| API y documentación | http://localhost:8080/docs      |
+| Qdrant              | http://localhost:6333/dashboard |
+| Ollama              | http://localhost:11434          |
 
-## Requisitos y diagnóstico de este equipo
+Los datos persistentes se guardan dentro de `alimentia/data/`. Detener o
+recrear los contenedores no elimina la base SQLite, los documentos, el índice
+vectorial ni los modelos descargados.
 
-Se detectaron Windows, WSL 2 con Ubuntu 20.04, aproximadamente 32 GB de RAM,
-gráficos Intel UHD 620 y Node.js 21.5.0. Se instaló Docker Desktop 4.89.0 para
-el usuario actual en `%LOCALAPPDATA%\Programs\DockerDesktop`, usando WSL 2.
-Python, uv y Ollama no se encontraron en el PATH de Windows.
+## Requisitos
 
-Instala [Docker Desktop para Windows](https://docs.docker.com/desktop/setup/install/windows-install/),
-usa el motor WSL 2 y abre Docker Desktop hasta que el motor esté listo.
-Si el instalador solicita actualizar WSL o reiniciar Windows, completa ese paso.
-Con Docker no necesitas instalar Python ni Ollama por separado.
+- Windows con Docker Desktop y el motor WSL 2 activo.
+- Docker Compose incluido en Docker Desktop.
+- GPU NVIDIA con controladores actualizados.
+- Integración de GPU habilitada en Docker Desktop.
 
-En este equipo Docker ya está instalado. Si una terminal abierta antes de la
-instalación no reconoce `docker`, abre una nueva o añade su ruta a esa sesión:
+Comprueba que Windows reconoce la GPU antes de iniciar:
 
 ```powershell
-$env:PATH = "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin;$env:PATH"
+nvidia-smi
 ```
 
-El backend utiliza el índice oficial de PyTorch para CPU, evitando instalar
-bibliotecas CUDA en este equipo. Ollama conserva su configuración de GPU opcional.
+Si este comando falla, actualiza el controlador NVIDIA antes de utilizar
+`docker-compose.gpu.yml`.
 
-El Compose principal utiliza CPU. El modelo inicial es `llama3.2:3b`, cuya descarga
-es de aproximadamente 2 GB según [Ollama](https://ollama.com/library/llama3.2).
-La generación con CPU puede tardar; este modelo sirve para probar la integración.
-La calidad de sus planes debe evaluarse por separado.
+## Configuración inicial
 
-## Arranque completo
-
-Si ya tienes `npm run dev` activo, detenlo antes de iniciar el frontend de Docker:
-ambos utilizan el puerto 3000.
-
-En PowerShell, desde la raíz de este repositorio:
+Abre PowerShell en la raíz del repositorio y entra al directorio de la
+aplicación:
 
 ```powershell
 cd .\alimentia
-docker version
-docker compose version
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-New-Item -ItemType Directory -Force data/pdfs, data/tables, data/db | Out-Null
-docker compose config --quiet
-docker compose up -d --build
-docker compose logs --tail 100 backend
 ```
 
-Al iniciar el backend, este descarga el modelo configurado si aún no existe y
-lo calienta antes de aceptar peticiones. La primera inicialización puede tardar
-por la descarga (aproximadamente 2 GB para el modelo predeterminado); los datos
-quedan en `alimentia/data/ollama`. En los siguientes arranques no vuelve a
-descargarlo, aunque Ollama sí necesita cargarlo en memoria. `OLLAMA_KEEP_ALIVE=-1`
-lo mantiene residente mientras Ollama esté encendido. Se puede cambiar a una
-duración como `10m` para liberar memoria tras un periodo sin solicitudes.
+Crea el archivo de configuración la primera vez:
 
-Si cambias `LLM_MODEL` en `.env`, reinicia los servicios con
-`docker compose up -d --build`; la rutina de inicio descargará y precargará ese
-modelo automáticamente. Para desactivar la precarga (por ejemplo, si se usa un
-proveedor OpenAI-compatible externo), configura `ALIMENTIA_OLLAMA_PRELOAD=false`.
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
 
-La primera ejecución descarga imágenes, dependencias y el modelo de embeddings
-`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` desde Hugging Face.
-El backend lo carga una vez al inicio de cada sesión y lo reutiliza para RAG,
-ingesta y consultas; espera a que los logs indiquen `Application startup complete`
-y verifica:
+Edita `.env` para seleccionar el modelo y sus parámetros. Las variables más
+relevantes son:
+
+```dotenv
+LLM_MODEL=qwen3.5:9b
+OLLAMA_KEEP_ALIVE=-1
+ALIMENTIA_OLLAMA_PRELOAD=true
+ALIMENTIA_LLM_CONTEXT_TOKENS=30720
+ALIMENTIA_BAM_SAMPLE_SIZE=30
+```
+
+`ALIMENTIA_LLM_CONTEXT_TOKENS` controla la ventana completa del modelo. No se
+configura un límite de salida separado. `ALIMENTIA_BAM_SAMPLE_SIZE` agrega esa
+cantidad de alimentos aleatorios a los alimentos base enviados al modelo para
+mejorar la variedad de los planes.
+
+## 1. Iniciar la aplicación
+
+Desde `alimentia/`, ejecuta:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+Este comando:
+
+- construye frontend y backend;
+- inicia SQLite/Prisma, Qdrant y Ollama;
+- asigna una GPU NVIDIA al contenedor de Ollama;
+- descarga el modelo configurado si todavía no existe;
+- precarga el modelo y prepara el índice RAG;
+- muestra los logs de todos los servicios en la terminal.
+
+La primera ejecución puede tardar por la descarga de imágenes, dependencias,
+embeddings y el modelo LLM. Espera hasta ver que el backend completó el
+arranque y que el frontend está disponible.
+
+Como `up` permanece mostrando logs, abre otra terminal PowerShell para los
+comandos siguientes y vuelve a entrar a `alimentia/`:
+
+```powershell
+cd .\alimentia
+```
+
+Comprueba la API:
 
 ```powershell
 Invoke-RestMethod http://localhost:8080/health
-docker compose exec backend uv run python seed.py
-Invoke-RestMethod http://localhost:8080/api/v1/patients
 ```
 
-El seed añade tres pacientes de ejemplo solamente si la tabla está vacía.
-Abre http://localhost:3000 y entra en Pacientes. La página Resumen contiene
-métricas estáticas y no debe usarse para comprobar la conexión a la API.
-`/health` comprueba que la API responde; no valida la generación del LLM ni el RAG.
+La respuesta esperada incluye `status: ok`.
 
-## Fuentes que no vienen incluidas
+## 2. Cargar datos de demostración
 
-- Copia las guías clínicas PDF en `alimentia/data/pdfs/`.
-- Copia la tabla nutricional en `alimentia/data/tables/BAM.xlsx`.
-  El código espera la hoja `BAM 18.1.1`, con encabezados en la fila 13,
-  y las columnas `nombre_del_alimento`, `energ_kcal`, `protein`, `lipid_tot`, `carbohydrt`.
+Con los contenedores activos, ejecuta:
 
-Sin BAM.xlsx, el backend registra un error y las búsquedas de alimentos devuelven
-una lista vacía. Sin PDFs, no hay base documental clínica; la ingesta actual puede
-registrar un error por carpeta vacía en su hilo de arranque. Tras añadir el Excel,
-reinicia el backend. Para la primera ingesta de PDFs:
+```powershell
+docker compose exec backend uv run --no-sync python seed.py
+```
+
+El seed crea o actualiza los cinco casos de evaluación utilizados por el MVP.
+Después abre http://localhost:3000 y entra en **Pacientes**.
+
+Vuelve a ejecutar el seed cuando necesites restaurar esos casos de prueba. No
+lo ejecutes mientras el backend todavía está migrando la base de datos.
+
+## 3. Comprobar el modelo en Ollama
+
+Ejecuta:
+
+```powershell
+docker exec -it alimentia-ollama-1 ollama ps
+```
+
+La salida muestra los modelos cargados actualmente, su tamaño, procesador y
+tiempo de permanencia. Durante una generación o después de la precarga debe
+aparecer el modelo definido en `LLM_MODEL`.
+
+En la columna `PROCESSOR`, un valor como `100% GPU` confirma que Ollama cargó
+el modelo completamente en la GPU. Una combinación CPU/GPU indica que parte
+del modelo fue descargada a RAM porque no cabía por completo en la VRAM.
+
+Si la lista está vacía, revisa:
+
+```powershell
+docker compose logs --tail 100 backend ollama
+```
+
+## 4. Supervisar memoria GPU
+
+Para observar continuamente la memoria utilizada, ejecuta en otra terminal:
+
+```powershell
+nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free --format=csv -l 1
+```
+
+El comando actualiza los valores cada segundo:
+
+- `memory.total`: VRAM total disponible;
+- `memory.used`: VRAM ocupada por Ollama y otros procesos;
+- `memory.free`: VRAM todavía disponible.
+
+Déjalo activo mientras generas un plan para comprobar el consumo real del
+modelo. Detén el seguimiento con `Ctrl+C`.
+
+## Recursos nutricionales y RAG
+
+Para utilizar todos los recursos del MVP, deben existir:
+
+- `alimentia/data/tables/BAM.xlsx`;
+- los PDF autorizados en `alimentia/data/pdfs/`;
+- `alimentia/data/knowledge_base/manifest.json`.
+
+BAM debe contener la hoja `BAM 18.1.1`, encabezados en la fila 13 y las
+columnas `codigomex2`, `nombre_del_alimento`, `energ_kcal`, `protein`,
+`lipid_tot` y `carbohydrt`.
+
+Después de agregar o cambiar estos archivos, reinicia el backend:
 
 ```powershell
 docker compose restart backend
-Invoke-RestMethod -Method Post http://localhost:8080/api/v1/ingest-pdfs
 ```
 
-La ingesta actual omite el trabajo si la colección ya contiene datos: este endpoint
-no actualiza automáticamente una colección existente al agregar más PDFs.
+## Detener la aplicación
 
-## Operación
+Si ejecutaste Compose en primer plano, pulsa `Ctrl+C`. Después puedes detener
+y retirar los contenedores con:
 
-Ejecuta estos comandos desde `alimentia/`:
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml down
+```
+
+Los datos persistentes permanecen en `alimentia/data/`. Para iniciar de nuevo,
+repite el comando de la sección **Iniciar la aplicación**.
+
+## Diagnóstico rápido
 
 ```powershell
 docker compose ps
-docker compose logs -f backend frontend
-docker compose exec ollama ollama list
-docker compose down
+docker compose logs --tail 100 backend frontend ollama qdrant
+Invoke-RestMethod http://localhost:8080/health
+docker exec -it alimentia-ollama-1 ollama ps
 ```
 
-`down` detiene los servicios; los datos permanecen en `alimentia/data/`.
-Para volver a iniciar: `docker compose up -d`.
-
-El archivo Compose principal no exige GPU y funciona con CPU. En un equipo con
-GPU NVIDIA y soporte de GPU ya configurado en Docker Desktop, puede activarse la
-aceleración opcional así:
-
-```powershell
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-```
-
-En equipos sin GPU NVIDIA, usa solo `docker compose up -d --build` como arriba;
-no se debe incluir `docker-compose.gpu.yml`. La generación usa el mismo modelo y
-las mismas validaciones en ambos casos; la GPU cambia el tiempo de inferencia,
-no los criterios del plan. Docker debe reconocer la GPU antes de aplicar el
-archivo opcional.
-
-## Solo la interfaz, sin Docker
-
-Usa Node.js 22 o 24. Node 21.5.0 genera advertencias de incompatibilidad en algunas
-dependencias del proyecto. Desde la raíz:
-
-```powershell
-cd .\alimentia\frontend
-npm ci
-npm run dev
-```
-
-Abre http://localhost:3000. Las funciones de pacientes, planes y generación requieren
-la API en `http://localhost:8080`; sus URLs están escritas directamente en
-`src/services/api.ts`. El backend nativo requiere además Python 3.14, Prisma,
-Qdrant y Ollama, y contiene rutas `/app/data/...` diseñadas para Docker.
-
-## Límites de la revisión
-
-Se instaló la interfaz con `npm ci` y se inició Next.js localmente. La petición a
-`http://127.0.0.1:3000` devolvió HTTP 200 e incluyó el título `AlimentIA Dashboard`
-y el contenido `Pacientes activos`. La conexión al navegador de pruebas falló,
-por lo que no se verificaron visualmente la pantalla ni las interacciones.
-
-Se construyó el backend con PyTorch para CPU y se iniciaron backend, Qdrant y
-Ollama. Se ejecutó el seed y se verificaron `/health` y `/api/v1/patients`
-con HTTP 200; la API devolvió tres pacientes. CORS permite tanto
-`http://localhost:3000` como `http://127.0.0.1:3000`. La ruta de interfaz
-`/patients` también respondió con HTTP 200. `uv lock --check` pasó.
-
-Ollama está ejecutándose, pero aún no se descargó el modelo `llama3.2:3b`.
-No se ha validado la generación de planes ni la calidad clínica del resultado.
-Siguen faltando BAM.xlsx y los PDFs, por lo que la ingesta documental registra
-el error de carpeta vacía indicado anteriormente; esto no impide listar pacientes.
+Si el puerto 3000 o 8080 ya está ocupado, detén la aplicación que lo utiliza
+antes de iniciar Compose. Si Docker no reconoce la GPU, no continúes con el
+archivo GPU hasta que `nvidia-smi` funcione y Docker Desktop tenga habilitada
+la integración correspondiente.

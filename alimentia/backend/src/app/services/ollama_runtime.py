@@ -1,4 +1,4 @@
-"""Arranque y calentamiento opcional del modelo Ollama local."""
+"""Precarga opcional del modelo Ollama configurado."""
 import logging
 import os
 
@@ -7,12 +7,15 @@ import httpx
 logger = logging.getLogger("uvicorn.error")
 
 
-async def preload_ollama_model() -> None:
-    """Descarga (si hace falta) y deja cargado el modelo antes de servir API.
+def _context_tokens() -> int:
+    try:
+        return int(os.getenv("ALIMENTIA_LLM_CONTEXT_TOKENS", "4096"))
+    except ValueError:
+        return 4096
 
-    Es una operación de mejor esfuerzo: un Ollama inaccesible no impide que
-    FastAPI arranque. Los despliegues con un proveedor remoto se omiten.
-    """
+
+async def preload_ollama_model() -> None:
+    """Descarga y calienta el modelo sin bloquear el arranque de la API."""
     if os.getenv("ALIMENTIA_OLLAMA_PRELOAD", "true").strip().lower() not in {"1", "true", "yes", "on"}:
         return
 
@@ -24,7 +27,8 @@ async def preload_ollama_model() -> None:
         return
 
     model = os.getenv("LLM_MODEL", "llama3.2:3b")
-    logger.info("Preparando modelo Ollama '%s'; el primer arranque puede descargarlo.", model)
+    logger.info(
+        "Preparando modelo Ollama '%s'; el primer arranque puede descargarlo.", model)
     try:
         async with httpx.AsyncClient(base_url=base_url, timeout=None) as client:
             pull = await client.post("/api/pull", json={"name": model, "stream": False})
@@ -34,9 +38,10 @@ async def preload_ollama_model() -> None:
                 "prompt": "",
                 "stream": False,
                 "keep_alive": -1,
-                "options": {"num_predict": 1},
+                "options": {"num_predict": 1, "num_ctx": _context_tokens()},
             })
             warmup.raise_for_status()
         logger.info("Modelo Ollama '%s' listo y residente en memoria.", model)
     except Exception as exc:
-        logger.warning("No fue posible precargar Ollama ('%s'); la API arrancará igualmente: %s", model, exc)
+        logger.warning(
+            "No fue posible precargar Ollama ('%s'); la API arrancará igualmente: %s", model, exc)
