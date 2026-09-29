@@ -1,0 +1,68 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    environment:
+      # El modelo permanece cargado hasta detener el servicio.
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
+      # El API OpenAI-compatible no acepta num_ctx por petición.
+      - OLLAMA_CONTEXT_LENGTH=${ALIMENTIA_LLM_CONTEXT_TOKENS:-4096}
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./data/qdrant_storage:/qdrant/storage
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      - LLM_API_URL=http://ollama:11434/v1
+      - QDRANT_URL=http://qdrant:6333
+      - LLM_MODEL=${LLM_MODEL:-llama3.2:3b}
+      - ALIMENTIA_OLLAMA_PRELOAD=${ALIMENTIA_OLLAMA_PRELOAD:-true}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      - ALIMENTIA_KNOWLEDGE_PATH=${ALIMENTIA_KNOWLEDGE_PATH:-/app/data/pdfs}
+      - ALIMENTIA_FOOD_DB_PATH=${ALIMENTIA_FOOD_DB_PATH:-/app/data/tables/BAM.xlsx}
+      - ALIMENTIA_KNOWLEDGE_MANIFEST_PATH=${ALIMENTIA_KNOWLEDGE_MANIFEST_PATH:-/app/data/knowledge_base/manifest.json}
+      - ALIMENTIA_RAG_TOP_K=${ALIMENTIA_RAG_TOP_K:-3}
+      - ALIMENTIA_BAM_SAMPLE_SIZE=${ALIMENTIA_BAM_SAMPLE_SIZE:-8}
+      - ALIMENTIA_LLM_TEMPERATURE=${ALIMENTIA_LLM_TEMPERATURE:-0.2}
+      - ALIMENTIA_LLM_CONTEXT_TOKENS=${ALIMENTIA_LLM_CONTEXT_TOKENS:-4096}
+      - ALIMENTIA_LLM_REASONING_EFFORT=${ALIMENTIA_LLM_REASONING_EFFORT:-}
+      - ALIMENTIA_LLM_TIMEOUT_SECONDS=${ALIMENTIA_LLM_TIMEOUT_SECONDS:-240}
+      - ALIMENTIA_DEFAULT_ACTOR=${ALIMENTIA_DEFAULT_ACTOR:-profesional-demo}
+    depends_on:
+      ollama:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./backend/src:/app/src
+      - ./data/pdfs:/app/data/pdfs
+      - ./data/tables:/app/data/tables
+      - ./data/db:/app/data/db
+      - ./data/knowledge_base:/app/data/knowledge_base
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
+    depends_on:
+      - backend
